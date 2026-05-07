@@ -212,6 +212,44 @@ export function IconFilePlus(p: IconProps) {
   );
 }
 
+export function IconImage(p: IconProps) {
+  return (
+    <Base {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="9" cy="10" r="2" />
+      <path d="m21 16-5-5L5 20" />
+    </Base>
+  );
+}
+
+export function IconMic(p: IconProps) {
+  return (
+    <Base {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </Base>
+  );
+}
+
+export function IconStop(p: IconProps) {
+  return (
+    <Base {...p}>
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </Base>
+  );
+}
+
+export function IconMusic(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="M9 18V6l11-2v12" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="17" cy="16" r="3" />
+    </Base>
+  );
+}
+
 export function IconMoreHorizontal(p: IconProps) {
   return (
     <Base {...p}>

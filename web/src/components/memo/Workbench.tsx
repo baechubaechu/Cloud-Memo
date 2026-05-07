@@ -15,14 +15,18 @@ import {
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconImage,
   IconList,
   IconLogOut,
+  IconMic,
+  IconMusic,
   IconPaperclip,
   IconPlus,
   IconSave,
   IconSearch,
   IconSidebarToggle,
   IconStar,
+  IconStop,
   IconTrash,
   IconX,
 } from "./Icons";
@@ -31,6 +35,7 @@ import {
   cmEditorVisualTheme,
   editorMouseHandlers,
   hybridMarkdownField,
+  setEditorAuthContext,
 } from "./editor";
 import {
   REASON_LABEL,
@@ -165,6 +170,13 @@ export function MemoWorkbench({
 
   const saveTimerRef = useRef<number | null>(null);
   const lastSentRef = useRef<{ title: string; content: string }>({ title: "", content: "" });
+  // CodeMirror EditorView — onCreateEditor 에서 채워짐. 첨부 마커 삽입에 사용.
+  const editorViewRef = useRef<EditorView | null>(null);
+  // 음성 녹음 상태
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
   // True while a Korean/Japanese/Chinese IME is composing a character.
   // We must not run the autosave debounce timer during composition,
   // otherwise React re-renders mid-composition and the in-progress jamo
@@ -276,6 +288,27 @@ export function MemoWorkbench({
     void refreshMeta();
     void refreshUsage();
   }, [refreshMeta, refreshUsage]);
+
+  // 에디터 내부 위젯이 첨부를 인증된 blob URL 로 hydrate 할 수 있도록
+  // 모듈 전역에 토큰/api URL 을 주입한다.
+  useEffect(() => {
+    setEditorAuthContext({ token, apiUrl: api.API_URL });
+    return () => setEditorAuthContext(null);
+  }, [token]);
+
+  // 페이지를 떠나면 진행 중인 녹음 스트림을 반드시 정리.
+  useEffect(() => {
+    return () => {
+      try {
+        mediaRecorderRef.current?.stop();
+      } catch {
+        /* noop */
+      }
+      recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current = null;
+      mediaRecorderRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQuery(query), 350);
@@ -878,6 +911,108 @@ export function MemoWorkbench({
     }
     if (activeNoteId) await loadNote(activeNoteId);
     void refreshUsage();
+  }
+
+  // 본문 cursor 위치에 첨부 마커 텍스트를 삽입한다.
+  // - 위 / 아래에 빈 줄을 넣어 한 줄짜리 미디어 블록으로 보이게 한다.
+  // - 삽입 후 caret을 마커 다음 줄로 옮긴다.
+  function insertMarkerAtCursor(marker: string): boolean {
+    const view = editorViewRef.current;
+    if (!view) return false;
+    const sel = view.state.selection.main;
+    const doc = view.state.doc;
+    const lineAtFrom = doc.lineAt(sel.from);
+    const atLineStart = sel.from === lineAtFrom.from;
+    const lineEmpty = lineAtFrom.text.trim().length === 0;
+    let prefix = "";
+    let suffix = "\n";
+    if (!atLineStart) prefix = "\n";
+    else if (!lineEmpty) prefix = "";
+    const insertText = `${prefix}${marker}${suffix}`;
+    view.dispatch({
+      changes: { from: sel.from, to: sel.to, insert: insertText },
+      selection: { anchor: sel.from + insertText.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  function buildAttachmentMarker(att: { id: string; original_filename: string; kind?: string }): string {
+    const safeName = att.original_filename.replaceAll("]", "").replaceAll("[", "");
+    if (att.kind === "image") return `![${safeName}](attachment://${att.id})`;
+    if (att.kind === "audio") return `![audio:${safeName}](attachment://${att.id})`;
+    return `[${safeName}](attachment://${att.id})`;
+  }
+
+  // 툴바에서 부르는 업로드: 업로드 즉시 본문에 마커 자동 삽입.
+  async function uploadAndInsert(file: File) {
+    if (!activeNoteId) return;
+    try {
+      const att = await api.uploadAttachment(token, activeNoteId, file);
+      insertMarkerAtCursor(buildAttachmentMarker({ ...att }));
+      // 우측 패널에서도 보이도록 노트 다시 로드 + 사용량 갱신
+      await loadNote(activeNoteId);
+      void refreshUsage();
+    } catch (e) {
+      handleApiError(e);
+    }
+  }
+
+  async function startAudioRecording() {
+    if (isRecording) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("이 브라우저는 음성 녹음을 지원하지 않습니다.");
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.MediaRecorder === "undefined") {
+      setError("이 브라우저는 MediaRecorder를 지원하지 않습니다.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      // 가능한 mime 우선순위 (브라우저별 호환).
+      const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+      const mime = candidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recordedChunksRef.current = [];
+      rec.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) recordedChunksRef.current.push(ev.data);
+      };
+      rec.onstop = async () => {
+        const chunks = recordedChunksRef.current;
+        recordedChunksRef.current = [];
+        recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+        recordingStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+        if (chunks.length === 0) return;
+        const blobType = rec.mimeType || "audio/webm";
+        const ext = blobType.includes("mp4") ? "m4a" : blobType.includes("ogg") ? "ogg" : "webm";
+        const blob = new Blob(chunks, { type: blobType });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        const file = new File([blob], `recording-${ts}.${ext}`, { type: blobType });
+        await uploadAndInsert(file);
+      };
+      mediaRecorderRef.current = rec;
+      rec.start();
+      setIsRecording(true);
+    } catch (e) {
+      handleApiError(e);
+      recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current = null;
+    }
+  }
+
+  function stopAudioRecording() {
+    const rec = mediaRecorderRef.current;
+    if (!rec) return;
+    try {
+      rec.stop();
+    } catch {
+      /* noop */
+    }
   }
 
   async function handleTrashAttachment(att: Attachment) {
@@ -2057,6 +2192,71 @@ export function MemoWorkbench({
           </button>
 
           <div className="ml-auto flex items-center gap-1">
+            {/* 본문에 미디어 인라인 삽입: 이미지 / 음성 녹음 / 오디오 / 파일 */}
+            <label
+              title="이미지 본문에 삽입"
+              aria-label="이미지 본문에 삽입"
+              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
+            >
+              <IconImage size={15} />
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(ev) => {
+                  const f = ev.target.files?.[0];
+                  ev.target.value = "";
+                  if (f) void uploadAndInsert(f);
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => (isRecording ? stopAudioRecording() : void startAudioRecording())}
+              title={isRecording ? "녹음 종료" : "음성 녹음 시작"}
+              aria-label={isRecording ? "녹음 종료" : "음성 녹음 시작"}
+              className={`grid h-7 w-7 place-items-center rounded ${
+                isRecording ? "bg-red-500 text-white animate-pulse" : "hover:bg-black/5 hover:text-ink-900"
+              }`}
+            >
+              {isRecording ? <IconStop size={15} /> : <IconMic size={15} />}
+            </button>
+            <label
+              title="오디오 파일 본문에 삽입"
+              aria-label="오디오 파일 본문에 삽입"
+              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
+            >
+              <IconMusic size={15} />
+              <input
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                onChange={(ev) => {
+                  const f = ev.target.files?.[0];
+                  ev.target.value = "";
+                  if (f) void uploadAndInsert(f);
+                }}
+              />
+            </label>
+            <label
+              title="일반 파일 본문에 삽입"
+              aria-label="일반 파일 본문에 삽입"
+              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
+            >
+              <IconFile size={15} />
+              <input
+                type="file"
+                className="hidden"
+                onChange={(ev) => {
+                  const f = ev.target.files?.[0];
+                  ev.target.value = "";
+                  if (f) void uploadAndInsert(f);
+                }}
+              />
+            </label>
+
+            {/* 우측 패널 토글: 첨부 / 버전 */}
+            <span className="mx-1 h-4 w-px bg-ink-900/10" aria-hidden="true" />
             <button
               type="button"
               onClick={() => setRightPanel(rightPanel === "files" ? null : "files")}
@@ -2162,6 +2362,9 @@ export function MemoWorkbench({
                 editorMouseHandlers,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
+              onCreateEditor={(view) => {
+                editorViewRef.current = view;
+              }}
               onChange={(value) => {
                 setContent(value);
                 if (!composingRef.current) scheduleAutosave();

@@ -3,6 +3,94 @@ import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemir
 
 import { getRenderedOffset, headingLevelClass, renderMarkdownLineHtml } from "./markdown";
 
+// 첨부 마커를 인증된 미디어로 hydrate 하기 위한 모듈 전역 상태.
+// Workbench 가 마운트/토큰 변화 시점에 setEditorAuthContext 로 주입한다.
+type EditorAuthContext = { token: string; apiUrl: string };
+let __authCtx: EditorAuthContext | null = null;
+
+export function setEditorAuthContext(ctx: EditorAuthContext | null): void {
+  __authCtx = ctx;
+}
+
+const __blobCache = new Map<string, string>();
+function getBlobUrlFor(kind: "image" | "audio" | "file", attId: string): Promise<string | null> {
+  const key = `${kind}:${attId}`;
+  const cached = __blobCache.get(key);
+  if (cached) return Promise.resolve(cached);
+  const ctx = __authCtx;
+  if (!ctx) return Promise.resolve(null);
+  const url =
+    kind === "image"
+      ? `${ctx.apiUrl}/api/attachments/${attId}/thumbnail`
+      : `${ctx.apiUrl}/api/attachments/${attId}/download`;
+  return fetch(url, { headers: { Authorization: `Bearer ${ctx.token}` } })
+    .then(async (resp) => {
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      const objUrl = URL.createObjectURL(blob);
+      __blobCache.set(key, objUrl);
+      return objUrl;
+    })
+    .catch(() => null);
+}
+
+/** 위젯 HTML 안의 .memo-attachment placeholder 들을 실제 미디어로 교체. */
+function hydrateAttachmentsIn(root: HTMLElement): void {
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>(".memo-attachment"));
+  for (const node of nodes) {
+    const id = node.getAttribute("data-att-id") || "";
+    const kind = (node.getAttribute("data-att-kind") || "file") as "image" | "audio" | "file";
+    const label = node.getAttribute("data-att-label") || "";
+    if (!id) continue;
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.alt = label;
+      img.className = "memo-attachment-img max-h-[60vh] max-w-full rounded-lg border border-ink-900/10";
+      img.style.display = "block";
+      img.style.userSelect = "none";
+      img.draggable = false;
+      // placeholder 유지하면서 비동기 로드
+      void getBlobUrlFor("image", id).then((u) => {
+        if (u) img.src = u;
+      });
+      node.replaceChildren(img);
+    } else if (kind === "audio") {
+      const wrap = document.createElement("span");
+      wrap.className = "memo-attachment-audio-wrap inline-flex items-center gap-2 rounded-md bg-ink-900/5 px-2 py-1 text-[12px] text-ink-900/70";
+      const icon = document.createElement("span");
+      icon.textContent = "\u{1F3A4}";
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "none";
+      audio.className = "memo-attachment-audio-el";
+      audio.style.maxWidth = "260px";
+      audio.style.verticalAlign = "middle";
+      const cap = document.createElement("span");
+      cap.textContent = label || "음성";
+      void getBlobUrlFor("audio", id).then((u) => {
+        if (u) audio.src = u;
+      });
+      wrap.append(icon, audio, cap);
+      node.replaceChildren(wrap);
+    } else {
+      const a = document.createElement("a");
+      a.href = "#";
+      a.className = "memo-attachment-file-link text-sky-700 underline underline-offset-2";
+      a.textContent = `\u{1F4CE} ${label || "첨부 파일"}`;
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        void getBlobUrlFor("file", id).then((u) => {
+          if (!u) return;
+          const w = window.open(u, "_blank", "noopener,noreferrer");
+          if (!w) window.location.assign(u);
+        });
+      });
+      node.replaceChildren(a);
+    }
+  }
+}
+
 // 렌더된 텍스트 element 안에서 [from, to] 글자 범위를 inline span으로 감싸 하이라이트 표시.
 export function applyInlineHighlight(text: HTMLElement, from: number, to: number): void {
   if (to <= from) return;
@@ -59,6 +147,8 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     text.className = "inline";
     text.innerHTML = renderMarkdownLineHtml(this.rawLine);
     el.appendChild(text);
+    // 첨부 placeholder 가 있으면 토큰을 사용해 인증된 미디어로 교체.
+    hydrateAttachmentsIn(text);
     if (this.highlightTo > this.highlightFrom) {
       const renderedFrom = getRenderedOffset(this.rawLine, this.highlightFrom);
       const renderedTo = getRenderedOffset(this.rawLine, this.highlightTo);
