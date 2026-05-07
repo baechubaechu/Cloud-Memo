@@ -33,6 +33,7 @@ import {
 import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
 import {
   cmEditorVisualTheme,
+  editorCursorBackupSync,
   editorCursorTracker,
   editorMediaInputHandlers,
   editorMouseHandlers,
@@ -926,28 +927,33 @@ export function MemoWorkbench({
   }
 
   // 본문 cursor 위치에 첨부 마커 텍스트를 삽입한다.
-  // - 위 / 아래에 빈 줄을 넣어 한 줄짜리 미디어 블록으로 보이게 한다.
-  // - 삽입 후 caret을 마커 다음 줄로 옮긴다.
   //
-  // 삽입 위치 우선순위:
-  //   1) 본문 (CodeMirror) 가 현재 포커스를 가지고 있으면 → state.selection
-  //   2) 그렇지 않으면 (제목 input / 툴바 버튼 / 외부 drop 등) → 사용자가
-  //      마지막으로 본문에 둔 캐럿 (__lastDocCursor)
-  //   3) 마지막 캐럿이 0 이고 본문 포커스도 없으면 → 그냥 0 (top). 사용자가
-  //      본문을 한 번도 만진 적이 없는 진짜 fresh 노트 케이스.
+  // 단일 진실 = `__lastDocCursor` (mouseup / keyup / focus / selectionSet /
+  // docChanged 시점에 항상 갱신된다). 본문 포커스 여부와 무관하게 이 값을
+  // 사용해서, 제목 input / 툴바 / 외부 drop 어느 경로로 들어와도 사용자가
+  // 마지막에 본문에서 둔 캐럿 자리에 들어가도록 한다.
   function insertMarkerAtCursor(marker: string): boolean {
     const view = editorViewRef.current;
     if (!view) return false;
     const doc = view.state.doc;
-    const stateFrom = view.state.selection.main.from;
-    const stateTo = view.state.selection.main.to;
-    const useStateSelection = view.hasFocus;
-    const insertFrom = useStateSelection
-      ? stateFrom
-      : Math.min(getLastDocCursor(), doc.length);
-    const insertTo = useStateSelection ? stateTo : insertFrom;
-    const lineAtFrom = doc.lineAt(insertFrom);
-    const atLineStart = insertFrom === lineAtFrom.from;
+    const last = Math.min(getLastDocCursor(), doc.length);
+    const baseFrom = last;
+    const baseTo = last;
+    if (typeof window !== "undefined") {
+      // 진단용. 콘솔에서 어떤 값을 기준으로 마커가 삽입되는지 확인.
+      // eslint-disable-next-line no-console
+      console.debug("[insertMarker]", {
+        marker,
+        stateFrom: view.state.selection.main.from,
+        stateTo: view.state.selection.main.to,
+        lastDocCursor: last,
+        viewHasFocus: view.hasFocus,
+        chosenInsertFrom: baseFrom,
+        docLength: doc.length,
+      });
+    }
+    const lineAtFrom = doc.lineAt(baseFrom);
+    const atLineStart = baseFrom === lineAtFrom.from;
     const lineEmpty = lineAtFrom.text.trim().length === 0;
     let prefix = "";
     let suffix = "\n";
@@ -955,8 +961,8 @@ export function MemoWorkbench({
     else if (!lineEmpty) prefix = "";
     const insertText = `${prefix}${marker}${suffix}`;
     view.dispatch({
-      changes: { from: insertFrom, to: insertTo, insert: insertText },
-      selection: { anchor: insertFrom + insertText.length },
+      changes: { from: baseFrom, to: baseTo, insert: insertText },
+      selection: { anchor: baseFrom + insertText.length },
       scrollIntoView: true,
     });
     view.focus();
@@ -2404,6 +2410,7 @@ export function MemoWorkbench({
                 editorMouseHandlers,
                 editorMediaInputHandlers,
                 editorCursorTracker,
+                editorCursorBackupSync,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {

@@ -34,10 +34,34 @@ let __lastDocCursor = 0;
 export function getLastDocCursor(): number {
   return __lastDocCursor;
 }
+function updateLastDocCursor(view: EditorView): void {
+  __lastDocCursor = Math.min(
+    view.state.selection.main.from,
+    view.state.doc.length,
+  );
+}
 export const editorCursorTracker = EditorView.updateListener.of((u) => {
-  if (u.selectionSet || u.docChanged) {
+  if (u.selectionSet || u.docChanged || u.focusChanged) {
     __lastDocCursor = Math.min(u.state.selection.main.from, u.state.doc.length);
   }
+});
+// 일부 브라우저에서 widget 안 mousedown 등 특수 케이스에서 selectionSet 이 한
+// 박자 늦게 잡히는 경우가 있어, 보강용으로 mouseup / keyup 시점에도 한 번 더
+// 강제로 동기화한다. EditorView.updateListener 만으로 충분한 케이스가 대부분
+// 이지만 안전망 차원.
+export const editorCursorBackupSync = EditorView.domEventHandlers({
+  mouseup(_ev, view) {
+    updateLastDocCursor(view);
+    return false;
+  },
+  keyup(_ev, view) {
+    updateLastDocCursor(view);
+    return false;
+  },
+  focus(_ev, view) {
+    updateLastDocCursor(view);
+    return false;
+  },
 });
 
 const __blobCache = new Map<string, string>();
