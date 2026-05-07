@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.local
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/*.tsbuildinfo
+web/.next/
+web/out/
+web/*.tsbuildinfo
+# PWA build artifacts (next-pwa 가 빌드시 생성)
+web/public/sw.js
+web/public/sw.js.map
+web/public/workbox-*.js
+web/public/workbox-*.js.map
+web/public/fallback-*.js
+
+# Python
+backend/.pytest_cache/
+backend/.mypy_cache/
+api/.pytest_cache/
+api/.mypy_cache/
+*.egg-info/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Uploads (local dev)
+data/

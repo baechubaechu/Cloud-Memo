@@ -1,0 +1,23 @@
+{
+  "name": "Cloud Memo",
+  "short_name": "Memo",
+  "description": "개인용 클라우드 메모 — 웹/PWA",
+  "start_url": "/memo",
+  "display": "standalone",
+  "background_color": "#fbfaf8",
+  "theme_color": "#101727",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

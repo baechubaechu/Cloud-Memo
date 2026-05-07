@@ -1,0 +1,97 @@
+services:
+  memo-postgres:
+    image: postgres:16-alpine
+    container_name: memo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-memo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memo}
+      POSTGRES_DB: ${POSTGRES_DB:-memo}
+    volumes:
+      - ${DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memo} -d ${POSTGRES_DB:-memo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  memo-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: memo-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-memo}:${POSTGRES_PASSWORD:-memo}@memo-postgres:5432/${POSTGRES_DB:-memo}
+      APP_ENV: ${APP_ENV:-development}
+      JWT_SECRET: ${JWT_SECRET:-dev-change-me}
+      UPLOAD_DIR: /data/uploads
+      EXPORT_DIR: /data/exports
+      BACKUP_DIR: /data/backups
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost}
+      INITIAL_USER_EMAIL: ${INITIAL_USER_EMAIL:-admin@localhost}
+      INITIAL_USER_PASSWORD: ${INITIAL_USER_PASSWORD:-1234}
+      VERSION_AUTOSAVE_MIN_SECONDS: ${VERSION_AUTOSAVE_MIN_SECONDS:-120}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+    volumes:
+      - ${DATA_DIR:-./data}/uploads:/data/uploads
+      - ${DATA_DIR:-./data}/exports:/data/exports
+      - ${DATA_DIR:-./data}/backups:/data/backups
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2); sys.exit(0)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      memo-postgres:
+        condition: service_healthy
+
+  memo-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: memo-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - memo-api
+
+  memo-worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: memo-worker
+    restart: unless-stopped
+    environment:
+      API_URL: http://memo-api:8000
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+      POLL_SECONDS: ${WORKER_POLL_SECONDS:-30}
+    depends_on:
+      - memo-api
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: memo-caddy
+    restart: unless-stopped
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - memo-api
+      - memo-web
+
+volumes:
+  caddy_data:
+  caddy_config:
