@@ -31,14 +31,28 @@ export function setEditorInsertFile(fn: InsertFileFn | null): void {
 // 가 있을 때도 "본문 어디에 마커를 넣어야 할지" 를 정하기 위해 따로 추적한다.
 // updateListener 가 selectionSet 일 때마다 갱신한다.
 let __lastDocCursor = 0;
+// 사용자가 본문에서 명시적으로 캐럿을 둔 적이 있는지. 단순히 노트가 로드될 때
+// CodeMirror 가 selection 을 0 으로 초기화하는 것은 "사용자가 0 에 두기로 한 것"
+// 이 아니므로 이 플래그를 false 로 유지해야 한다. mouseup / keyup / paste / drop /
+// focus 같은 사용자 직접 행위가 있을 때만 true 로 올린다. 노트 전환 시점에는
+// resetLastDocCursor 로 다시 false.
+let __cursorEverExplicit = false;
 export function getLastDocCursor(): number {
   return __lastDocCursor;
 }
-function updateLastDocCursor(view: EditorView): void {
+export function isLastDocCursorExplicit(): boolean {
+  return __cursorEverExplicit;
+}
+export function resetLastDocCursor(): void {
+  __lastDocCursor = 0;
+  __cursorEverExplicit = false;
+}
+function syncCursorFromView(view: EditorView, markExplicit: boolean): void {
   __lastDocCursor = Math.min(
     view.state.selection.main.from,
     view.state.doc.length,
   );
+  if (markExplicit) __cursorEverExplicit = true;
 }
 export const editorCursorTracker = EditorView.updateListener.of((u) => {
   if (u.selectionSet || u.docChanged || u.focusChanged) {
@@ -47,19 +61,19 @@ export const editorCursorTracker = EditorView.updateListener.of((u) => {
 });
 // 일부 브라우저에서 widget 안 mousedown 등 특수 케이스에서 selectionSet 이 한
 // 박자 늦게 잡히는 경우가 있어, 보강용으로 mouseup / keyup 시점에도 한 번 더
-// 강제로 동기화한다. EditorView.updateListener 만으로 충분한 케이스가 대부분
-// 이지만 안전망 차원.
+// 강제로 동기화한다. 이 경로의 이벤트는 모두 사용자가 직접 일으킨 것이므로
+// __cursorEverExplicit 도 같이 올린다.
 export const editorCursorBackupSync = EditorView.domEventHandlers({
   mouseup(_ev, view) {
-    updateLastDocCursor(view);
+    syncCursorFromView(view, true);
     return false;
   },
   keyup(_ev, view) {
-    updateLastDocCursor(view);
+    syncCursorFromView(view, true);
     return false;
   },
   focus(_ev, view) {
-    updateLastDocCursor(view);
+    syncCursorFromView(view, true);
     return false;
   },
 });
@@ -390,11 +404,13 @@ function collectFilesFromTransfer(dt: DataTransfer | null): File[] {
 }
 
 export const editorMediaInputHandlers = EditorView.domEventHandlers({
-  paste(ev) {
+  paste(ev, view) {
     const files = collectFilesFromTransfer(ev.clipboardData);
     if (files.length === 0) return false; // 텍스트만 있으면 CodeMirror 기본 처리.
     ev.preventDefault();
     ev.stopPropagation();
+    // paste 는 본문 포커스 상태에서만 일어난다 → 현재 selection 을 신뢰한다.
+    syncCursorFromView(view, true);
     const fn = __insertFile;
     if (!fn) return true;
     for (const f of files) fn(f);
@@ -408,14 +424,27 @@ export const editorMediaInputHandlers = EditorView.domEventHandlers({
     }
     return false;
   },
-  drop(ev, _view) {
+  drop(ev, view) {
     const files = collectFilesFromTransfer(ev.dataTransfer);
     if (files.length === 0) return false;
     ev.preventDefault();
     ev.stopPropagation();
     // 사용자 요청: "본문 구역 어디에나 드랍해도 현재 커서 깜빡거리는 위치에"
-    // → 드롭 좌표는 무시하고 본문 currentcursor (insertMarkerAtCursor 안에서
-    //    state.selection / __lastDocCursor 를 같이 본다) 자리에 삽입한다.
+    // → 드롭 좌표는 무시하고 본문 currentcursor 자리에 삽입한다. 다만 사용자가
+    //   본문에 한 번도 클릭한 적이 없으면 캐럿이 0 인데 그건 사용자 의도가 아니라
+    //   초기값이다. 그런 경우는 드롭 좌표를 캐럿으로 잡아서 자연스럽게 한다.
+    if (!__cursorEverExplicit) {
+      const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+      if (typeof pos === "number") {
+        view.dispatch({ selection: { anchor: pos } });
+        syncCursorFromView(view, true);
+      } else {
+        // 좌표 매핑 실패 시 문서 끝.
+        const end = view.state.doc.length;
+        view.dispatch({ selection: { anchor: end } });
+        syncCursorFromView(view, true);
+      }
+    }
     const fn = __insertFile;
     if (!fn) return true;
     for (const f of files) fn(f);

@@ -39,6 +39,8 @@ import {
   editorMouseHandlers,
   getLastDocCursor,
   hybridMarkdownField,
+  isLastDocCursorExplicit,
+  resetLastDocCursor,
   setEditorAuthContext,
   setEditorInsertFile,
 } from "./editor";
@@ -380,6 +382,12 @@ export function MemoWorkbench({
         setError(null);
         setPanel("editor");
         setActiveNoteId(id);
+        // 노트가 바뀌면 이전 노트에서 두었던 캐럿 위치는 의미가 없다. 사용자가
+        // 새 노트 본문에 클릭하기 전까지는 "명시적 캐럿 없음" 상태로 둔다.
+        // 이렇게 안 하면 새 노트로 간 직후 툴바/드롭/붙여넣기로 첨부할 때
+        // 이전 노트의 오프셋이 새 노트에 적용돼서 예상치 못한 위치(또는 0)에
+        // 박히는 사고가 난다.
+        resetLastDocCursor();
         const note = await api.getNote(token, id);
         setActiveNote(note);
         setTitle(note.title);
@@ -928,30 +936,34 @@ export function MemoWorkbench({
 
   // 본문 cursor 위치에 첨부 마커 텍스트를 삽입한다.
   //
-  // 단일 진실 = `__lastDocCursor` (mouseup / keyup / focus / selectionSet /
-  // docChanged 시점에 항상 갱신된다). 본문 포커스 여부와 무관하게 이 값을
-  // 사용해서, 제목 input / 툴바 / 외부 drop 어느 경로로 들어와도 사용자가
-  // 마지막에 본문에서 둔 캐럿 자리에 들어가도록 한다.
+  // 캐럿 위치 결정 규칙(아래 우선순위):
+  //   1) 본문에 포커스가 살아 있으면 view.state.selection 을 그대로 쓴다.
+  //      (=화면에서 깜빡이는 캐럿)
+  //   2) 본문에서 한 번이라도 사용자가 명시적으로 캐럿을 둔 적이 있으면
+  //      그 마지막 위치(__lastDocCursor) 를 쓴다.
+  //   3) 위 두 조건 다 아니면(예: 새 노트 열자마자 툴바 버튼만 누른 경우)
+  //      문서 끝에 append. 예전엔 이 경우에도 0(=최상단) 으로 박혀버려서
+  //      "이미지 위치가 항상 최상단" 처럼 보였음.
   function insertMarkerAtCursor(marker: string): boolean {
     const view = editorViewRef.current;
     if (!view) return false;
     const doc = view.state.doc;
-    const last = Math.min(getLastDocCursor(), doc.length);
-    const baseFrom = last;
-    const baseTo = last;
-    if (typeof window !== "undefined") {
-      // 진단용. 콘솔에서 어떤 값을 기준으로 마커가 삽입되는지 확인.
-      // eslint-disable-next-line no-console
-      console.debug("[insertMarker]", {
-        marker,
-        stateFrom: view.state.selection.main.from,
-        stateTo: view.state.selection.main.to,
-        lastDocCursor: last,
-        viewHasFocus: view.hasFocus,
-        chosenInsertFrom: baseFrom,
-        docLength: doc.length,
-      });
+    // 우선순위:
+    //  1) 본문 포커스가 살아 있으면 화면에 보이는 캐럿(view.state.selection)이 곧 진실.
+    //  2) 본문에서 명시적으로 캐럿을 둔 적이 있다면 그 마지막 위치.
+    //  3) 사용자가 본문을 한 번도 안 만졌으면 문서 끝(append) — "최상단으로 박히는"
+    //     예전 버그 재발 방지.
+    let chosen: number;
+    if (view.hasFocus) {
+      chosen = view.state.selection.main.from;
+    } else if (isLastDocCursorExplicit()) {
+      chosen = getLastDocCursor();
+    } else {
+      chosen = doc.length;
     }
+    chosen = Math.min(Math.max(0, chosen), doc.length);
+    const baseFrom = chosen;
+    const baseTo = chosen;
     const lineAtFrom = doc.lineAt(baseFrom);
     const atLineStart = baseFrom === lineAtFrom.from;
     const lineEmpty = lineAtFrom.text.trim().length === 0;
