@@ -8,10 +8,12 @@ import {
 } from "@codemirror/view";
 
 import {
+  type AttachmentImageAlign,
   getRenderedOffset,
   headingLevelClass,
   parseAttachmentLine,
   renderMarkdownLineHtml,
+  serializeAttachmentMarker,
 } from "./markdown";
 
 // 첨부 마커를 인증된 미디어로 hydrate 하기 위한 모듈 전역 상태.
@@ -106,8 +108,34 @@ function getBlobUrlFor(kind: "image" | "audio" | "file", attId: string): Promise
     .catch(() => null);
 }
 
+function updateImageMarkerLine(
+  view: EditorView,
+  rawLine: string,
+  lineFrom: number,
+  patch: { width?: number; align?: AttachmentImageAlign },
+): void {
+  const marker = parseAttachmentLine(rawLine);
+  if (!marker || marker.kind !== "image") return;
+  const next = serializeAttachmentMarker({
+    ...marker,
+    ...(patch.width ? { width: Math.min(1200, Math.max(80, Math.round(patch.width))) } : {}),
+    ...(patch.align ? { align: patch.align } : {}),
+  });
+  const currentLine = view.state.doc.lineAt(lineFrom);
+  view.dispatch({
+    changes: { from: currentLine.from, to: currentLine.to, insert: next },
+    selection: { anchor: currentLine.from + next.length },
+    scrollIntoView: true,
+  });
+}
+
 /** 위젯 HTML 안의 .memo-attachment placeholder 들을 실제 미디어로 교체. */
-function hydrateAttachmentsIn(root: HTMLElement): void {
+function hydrateAttachmentsIn(
+  root: HTMLElement,
+  view: EditorView,
+  rawLine: string,
+  lineFrom: number,
+): void {
   const nodes = Array.from(root.querySelectorAll<HTMLElement>(".memo-attachment"));
   for (const node of nodes) {
     const id = node.getAttribute("data-att-id") || "";
@@ -115,19 +143,85 @@ function hydrateAttachmentsIn(root: HTMLElement): void {
     const label = node.getAttribute("data-att-label") || "";
     if (!id) continue;
     if (kind === "image") {
+      const width = Number(node.getAttribute("data-att-width") || "") || 360;
+      const align = (node.getAttribute("data-att-align") || "left") as AttachmentImageAlign;
+      const outer = document.createElement("span");
+      outer.className = "memo-image-block group relative my-2 inline-block max-w-full align-top";
+      outer.style.width = `${Math.min(1200, Math.max(80, width))}px`;
+      outer.style.maxWidth = "100%";
+      outer.style.display = "block";
+      if (align === "center") {
+        outer.style.marginLeft = "auto";
+        outer.style.marginRight = "auto";
+      } else if (align === "right") {
+        outer.style.marginLeft = "auto";
+        outer.style.marginRight = "0";
+      } else {
+        outer.style.marginLeft = "0";
+        outer.style.marginRight = "auto";
+      }
+
       const img = document.createElement("img");
       img.alt = label;
-      // 기본 크기: 너무 크면 한 줄짜리 위젯이 거대해져서 캐럿 처리/스크롤이 어색해진다.
-      // 일단 360px 까지로 잡고, 진짜 크게 보고 싶으면 클릭해서 새 창으로 열게 한다.
-      img.className = "memo-attachment-img max-h-[360px] max-w-full rounded-lg border border-ink-900/10";
+      img.className = "memo-attachment-img max-h-[70vh] w-full max-w-full rounded-lg border border-ink-900/10 object-contain";
       img.style.display = "block";
       img.style.userSelect = "none";
       img.draggable = false;
+
+      const toolbar = document.createElement("span");
+      toolbar.className = "memo-image-toolbar absolute left-2 top-2 z-10 hidden gap-1 rounded-md bg-white/90 p-1 text-[11px] shadow-sm ring-1 ring-ink-900/10 group-hover:flex";
+      const makeButton = (text: string, title: string, onClick: () => void) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        button.title = title;
+        button.className = "rounded px-1.5 py-0.5 text-ink-900/70 hover:bg-ink-900/10";
+        button.addEventListener("mousedown", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+        button.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          onClick();
+        });
+        return button;
+      };
+      toolbar.append(
+        makeButton("L", "왼쪽 정렬", () => updateImageMarkerLine(view, rawLine, lineFrom, { align: "left" })),
+        makeButton("C", "가운데 정렬", () => updateImageMarkerLine(view, rawLine, lineFrom, { align: "center" })),
+        makeButton("R", "오른쪽 정렬", () => updateImageMarkerLine(view, rawLine, lineFrom, { align: "right" })),
+      );
+
+      const handle = document.createElement("span");
+      handle.className = "memo-image-resize-handle absolute bottom-1 right-1 hidden h-4 w-4 cursor-nwse-resize rounded-sm bg-white/90 shadow-sm ring-1 ring-ink-900/15 group-hover:block";
+      handle.style.touchAction = "none";
+      handle.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const startX = ev.clientX;
+        const startWidth = outer.getBoundingClientRect().width;
+        let latestWidth = startWidth;
+        const onMove = (moveEv: MouseEvent) => {
+          latestWidth = Math.min(1200, Math.max(80, startWidth + moveEv.clientX - startX));
+          outer.style.width = `${latestWidth}px`;
+        };
+        const onUp = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+          updateImageMarkerLine(view, rawLine, lineFrom, { width: latestWidth });
+          view.focus();
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+
       // placeholder 유지하면서 비동기 로드
       void getBlobUrlFor("image", id).then((u) => {
         if (u) img.src = u;
       });
-      node.replaceChildren(img);
+      outer.append(img, toolbar, handle);
+      node.replaceChildren(outer);
     } else if (kind === "audio") {
       const wrap = document.createElement("span");
       wrap.className = "memo-attachment-audio-wrap inline-flex items-center gap-2 rounded-md bg-ink-900/5 px-2 py-1 text-[12px] text-ink-900/70";
@@ -224,7 +318,7 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     text.innerHTML = renderMarkdownLineHtml(this.rawLine);
     el.appendChild(text);
     // 첨부 placeholder 가 있으면 토큰을 사용해 인증된 미디어로 교체.
-    hydrateAttachmentsIn(text);
+    hydrateAttachmentsIn(text, view, this.rawLine, this.lineFrom);
     if (this.highlightTo > this.highlightFrom) {
       const renderedFrom = getRenderedOffset(this.rawLine, this.highlightFrom);
       const renderedTo = getRenderedOffset(this.rawLine, this.highlightTo);

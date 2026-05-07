@@ -18,16 +18,57 @@ export function escapeHtml(s: string): string {
  * 렌더 시점에 editor 모듈이 인증 토큰을 사용해 실제 미디어로 교체한다.
  */
 export type AttachmentMarkerKind = "image" | "audio" | "file";
+export type AttachmentImageAlign = "left" | "center" | "right";
 export type AttachmentMarker = {
   kind: AttachmentMarkerKind;
   id: string;
   /** 사용자에게 보여줄 라벨 (alt 또는 link text). */
   label: string;
+  /** 이미지 블록 렌더 폭(px). 기존 마커에는 없을 수 있다. */
+  width?: number;
+  /** 이미지 블록 정렬. 기존 마커에는 없을 수 있다. */
+  align?: AttachmentImageAlign;
 };
 
 const ATTACHMENT_URL = /attachment:\/\/([0-9a-fA-F-]{8,})/;
 const IMAGE_LINE_RE = /^!\[([^\]]*)\]\(attachment:\/\/([0-9a-fA-F-]{8,})\)\s*$/;
 const FILE_LINE_RE = /^\[([^\]]*)\]\(attachment:\/\/([0-9a-fA-F-]{8,})\)\s*$/;
+
+function parseImageAlt(alt: string): Pick<AttachmentMarker, "label" | "width" | "align"> {
+  const parts = alt.split("|");
+  const labelParts = [parts[0] || ""];
+  let width: number | undefined;
+  let align: AttachmentImageAlign | undefined;
+  for (const part of parts.slice(1)) {
+    const trimmed = part.trim();
+    const widthMatch = trimmed.match(/^w=(\d{2,4})$/);
+    if (widthMatch) {
+      const next = Number(widthMatch[1]);
+      if (Number.isFinite(next)) width = Math.min(1200, Math.max(80, next));
+      continue;
+    }
+    const alignMatch = trimmed.match(/^align=(left|center|right)$/);
+    if (alignMatch) {
+      align = alignMatch[1] as AttachmentImageAlign;
+      continue;
+    }
+    labelParts.push(part);
+  }
+  return { label: labelParts.join("|").trim(), width, align };
+}
+
+export function serializeAttachmentMarker(m: AttachmentMarker): string {
+  const safeLabel = m.label.replaceAll("]", "").replaceAll("[", "").replaceAll("\n", " ");
+  if (m.kind === "image") {
+    const meta: string[] = [];
+    if (m.width) meta.push(`w=${Math.min(1200, Math.max(80, Math.round(m.width)))}`);
+    if (m.align) meta.push(`align=${m.align}`);
+    const alt = [safeLabel, ...meta].filter(Boolean).join("|");
+    return `![${alt}](attachment://${m.id})`;
+  }
+  if (m.kind === "audio") return `![audio:${safeLabel}](attachment://${m.id})`;
+  return `[${safeLabel || "첨부 파일"}](attachment://${m.id})`;
+}
 
 export function parseAttachmentLine(line: string): AttachmentMarker | null {
   const trimmed = line.trim();
@@ -41,7 +82,7 @@ export function parseAttachmentLine(line: string): AttachmentMarker | null {
     if (alt.startsWith("audio:")) {
       return { kind: "audio", id, label: alt.slice("audio:".length).trim() };
     }
-    return { kind: "image", id, label: alt };
+    return { kind: "image", id, ...parseImageAlt(alt) };
   }
   const file = trimmed.match(FILE_LINE_RE);
   if (file) {
@@ -55,7 +96,9 @@ function renderAttachmentPlaceholderHtml(m: AttachmentMarker): string {
   const safeLabel = escapeHtml(m.label);
   const idAttr = escapeHtml(m.id);
   if (m.kind === "image") {
-    return `<span class="memo-attachment memo-attachment-image" data-att-id="${idAttr}" data-att-kind="image" data-att-label="${safeLabel}"><span class="memo-attachment-fallback">\u{1F5BC} ${safeLabel || "이미지"}</span></span>`;
+    const widthAttr = m.width ? ` data-att-width="${m.width}"` : "";
+    const alignAttr = m.align ? ` data-att-align="${m.align}"` : "";
+    return `<span class="memo-attachment memo-attachment-image" data-att-id="${idAttr}" data-att-kind="image" data-att-label="${safeLabel}"${widthAttr}${alignAttr}><span class="memo-attachment-fallback">\u{1F5BC} ${safeLabel || "이미지"}</span></span>`;
   }
   if (m.kind === "audio") {
     return `<span class="memo-attachment memo-attachment-audio" data-att-id="${idAttr}" data-att-kind="audio" data-att-label="${safeLabel}"><span class="memo-attachment-fallback">\u{1F3A4} ${safeLabel || "음성"}</span></span>`;
