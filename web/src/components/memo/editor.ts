@@ -358,7 +358,8 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     el.style.userSelect = "none";
     const lineNum = view.state.doc.lineAt(this.lineFrom).number;
     el.setAttribute("data-cm-widget-line", String(lineNum));
-    const isAttachment = parseAttachmentLine(this.rawLine) !== null;
+    const attachmentMarker = parseAttachmentLine(this.rawLine);
+    const isAttachment = attachmentMarker !== null;
     if (isAttachment) el.setAttribute("data-cm-widget-attachment", "1");
     const text = document.createElement("span");
     text.className = "inline";
@@ -409,6 +410,26 @@ export class RenderedMarkdownLineWidget extends WidgetType {
       // - 그래서 다음 줄 시작점으로 캐럿을 옮겨서 일반 텍스트 줄에 캐럿이
       //   놓이게 한다. 다음 줄이 없으면 새 줄을 만들어서라도 그 자리에 둔다.
       if (isAttachment) {
+        if (attachmentMarker.kind === "image") {
+          const imageBlock = el.querySelector<HTMLElement>(".memo-image-block");
+          const imageRect = imageBlock?.getBoundingClientRect();
+          const lineRect = el.getBoundingClientRect();
+          const clickedRightOfImage =
+            !!imageRect &&
+            ev.clientX > imageRect.right + 1 &&
+            ev.clientX <= lineRect.right &&
+            ev.clientY >= imageRect.top &&
+            ev.clientY <= imageRect.bottom;
+
+          if (clickedRightOfImage) {
+            view.dispatch({
+              selection: { anchor: lineTo },
+              scrollIntoView: true,
+            });
+            view.focus();
+            return;
+          }
+        }
         const docLen = view.state.doc.length;
         if (lineTo < docLen) {
           // 다음 줄이 이미 있으면 그 시작점으로.
