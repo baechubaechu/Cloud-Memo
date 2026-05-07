@@ -1,4 +1,5 @@
 import { Prec, StateField, type Range } from "@codemirror/state";
+import { redo, undo } from "@codemirror/commands";
 import {
   Decoration,
   type DecorationSet,
@@ -259,7 +260,10 @@ function hydrateAttachmentsIn(
         ev.stopPropagation();
         const currentLine = view.state.doc.lineAt(lineFrom);
         removeWholeAttachmentLine(view, currentLine);
-        view.focus();
+        // 위젯 DOM 이 같은 click 흐름 안에서 제거되므로, focus() 를 즉시
+        // 호출하면 contentDOM 이 아닌 곳으로 포커스가 빠질 수 있다. 다음
+        // 프레임에서 focus 해야 그 직후 Ctrl+Z 가 에디터에 도달한다.
+        requestAnimationFrame(() => view.focus());
       });
 
       const handle = document.createElement("span");
@@ -761,6 +765,9 @@ function removeWholeAttachmentLine(
     changes: { from, to, insert: "" },
     selection: { anchor: from },
     scrollIntoView: true,
+    // Ctrl+Z 그룹핑 안정화. 명시적 user event 가 있으면 history 가 이 변경을
+    // 한 단위로 깔끔하게 묶어서 되돌리기/다시실행이 한 번에 끝난다.
+    userEvent: "delete.attachment",
   });
   return true;
 }
@@ -860,6 +867,18 @@ export const editorNavAndDeleteKeymap = Prec.high(
         return false;
       },
     },
+  ]),
+);
+
+// 본문 편집용 undo/redo 단축키.
+// 기본 keymap 에도 일부 들어있지만, 이 에디터는 block widget / high-priority
+// custom keymap 이 많아서 브라우저 기본 동작으로 새지 않게 명시적으로 잡는다.
+export const editorUndoRedoKeymap = Prec.highest(
+  keymap.of([
+    { key: "Mod-z", run: undo },
+    { key: "Mod-y", run: redo },
+    // macOS 사용자가 익숙한 redo 도 같이 지원. Windows/Linux 에서는 무해하다.
+    { key: "Mod-Shift-z", run: redo },
   ]),
 );
 
