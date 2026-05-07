@@ -293,7 +293,10 @@ export function MemoWorkbench({
   }, [refreshMeta, refreshUsage]);
 
   // 에디터 내부 위젯이 첨부를 인증된 blob URL 로 hydrate 할 수 있도록
-  // 모듈 전역에 토큰/api URL 을 주입한다.
+  // 모듈 전역에 토큰/api URL 을 주입한다. useEffect 는 첫 paint 이후라
+  // 페이지 첫 로드 시 widget 의 첫 render 가 토큰 없이 동작하는 문제가 있어,
+  // render 동안에도 동기적으로 한번 호출해 둔다 (모듈 전역 변수만 갱신하므로 안전).
+  setEditorAuthContext({ token, apiUrl: api.API_URL });
   useEffect(() => {
     setEditorAuthContext({ token, apiUrl: api.API_URL });
     return () => setEditorAuthContext(null);
@@ -1004,13 +1007,21 @@ export function MemoWorkbench({
   }
 
   // 툴바에서 부르는 업로드: 업로드 즉시 본문에 마커 자동 삽입.
+  // 주의: loadNote 를 부르면 setContent 로 서버의 (마커 없는) 옛 본문이
+  // 화면을 덮어써서 방금 삽입한 마커가 즉시 사라진다. 그래서 메타데이터(첨부 목록)
+  // 만 갱신하고 title/content state 는 절대 건드리지 않는다.
   async function uploadAndInsert(file: File) {
     if (!activeNoteId) return;
     try {
       const att = await api.uploadAttachment(token, activeNoteId, file);
       insertMarkerAtCursor(buildAttachmentMarker({ ...att }));
-      // 우측 패널에서도 보이도록 노트 다시 로드 + 사용량 갱신
-      await loadNote(activeNoteId);
+      // 첨부 패널이 새 항목을 보이게끔 활성 노트 메타만 다시 가져온다.
+      try {
+        const fresh = await api.getNote(token, activeNoteId);
+        setActiveNote(fresh);
+      } catch {
+        /* 메타 갱신 실패는 치명적이지 않음 */
+      }
       void refreshUsage();
     } catch (e) {
       handleApiError(e);
