@@ -240,6 +240,28 @@ function hydrateAttachmentsIn(
         makeButton("R", "오른쪽 정렬", () => updateImageMarkerLine(view, rawLine, lineFrom, { align: "right" })),
       );
 
+      // 우상단 별도 삭제 버튼. 본문에서 이 이미지 마커 줄을 통째로 제거한다.
+      // 첨부 파일 자체는 서버에 그대로 남고, 마커만 본문에서 빠진다.
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.title = "이미지 제거";
+      removeBtn.setAttribute("aria-label", "이미지 제거");
+      removeBtn.className =
+        "memo-image-remove absolute right-2 top-2 z-10 grid h-6 w-6 place-items-center rounded-md bg-white/90 text-[11px] text-ink-900/70 shadow-sm ring-1 ring-ink-900/10 hover:bg-red-50 hover:text-red-700";
+      removeBtn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+      removeBtn.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      removeBtn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const currentLine = view.state.doc.lineAt(lineFrom);
+        removeWholeAttachmentLine(view, currentLine);
+        view.focus();
+      });
+
       const handle = document.createElement("span");
       handle.className = "memo-image-resize-handle absolute bottom-1 right-1 h-4 w-4 cursor-nwse-resize rounded-sm bg-white/90 shadow-sm ring-1 ring-ink-900/15";
       handle.style.touchAction = "none";
@@ -267,7 +289,7 @@ function hydrateAttachmentsIn(
       void getBlobUrlFor("image", id).then((u) => {
         if (u) img.src = u;
       });
-      outer.append(img, toolbar, handle);
+      outer.append(img, toolbar, removeBtn, handle);
       node.replaceChildren(outer);
     } else if (kind === "audio") {
       const wrap = document.createElement("span");
@@ -931,11 +953,17 @@ export const cmEditorVisualTheme = EditorView.theme({
   ".memo-image-resize-handle": {
     display: "none",
   },
+  ".memo-image-remove": {
+    display: "none",
+  },
   ".memo-image-block.is-selected .memo-image-toolbar": {
     display: "inline-flex",
   },
   ".memo-image-block.is-selected .memo-image-resize-handle": {
     display: "block",
+  },
+  ".memo-image-block.is-selected .memo-image-remove": {
+    display: "grid",
   },
   ".memo-image-block.is-selected": {
     outline: "2px solid #6366f1",

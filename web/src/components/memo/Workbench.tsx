@@ -2420,121 +2420,122 @@ export function MemoWorkbench({
           </div>
         </div>
 
+        {/* 그리기 툴바 — 메타 툴바 바로 아래의 별도 행. 본문 스크롤 영역
+            바깥에 두므로 제목/스크롤과 겹치지 않고 항상 같은 자리에 보인다. */}
+        <div className="flex items-center gap-1 border-b border-ink-900/10 bg-[#fafaf9] px-3 py-1.5">
+          <button
+            type="button"
+            onClick={() => setDrawingMode((v) => !v)}
+            title={drawingMode ? "그리기 끄기" : "본문 위에 자유 그리기"}
+            aria-pressed={drawingMode}
+            className={`grid h-7 w-7 place-items-center rounded ${
+              drawingMode ? "bg-indigo-500 text-white" : "text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+            }`}
+          >
+            <IconBrush size={15} />
+          </button>
+          {drawingMode && (
+            <>
+              <span className="mx-1 h-4 w-px bg-ink-900/15" />
+              <button
+                type="button"
+                onClick={() => setDrawingTool("pen")}
+                title="펜"
+                aria-pressed={drawingTool === "pen"}
+                className={`grid h-7 w-7 place-items-center rounded ${
+                  drawingTool === "pen" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                }`}
+              >
+                <IconBrush size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrawingTool("highlighter")}
+                title="형광펜"
+                aria-pressed={drawingTool === "highlighter"}
+                className={`grid h-7 w-7 place-items-center rounded ${
+                  drawingTool === "highlighter" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                }`}
+              >
+                <IconHighlighter size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setDrawingTool("eraser")}
+                title="지우개(stroke 단위)"
+                aria-pressed={drawingTool === "eraser"}
+                className={`grid h-7 w-7 place-items-center rounded ${
+                  drawingTool === "eraser" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                }`}
+              >
+                <IconEraser size={15} />
+              </button>
+              <span className="mx-1 h-4 w-px bg-ink-900/15" />
+              {/* 색 swatch */}
+              {["#1f2937", "#dc2626", "#2563eb", "#16a34a", "#f59e0b"].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setDrawingColor(c)}
+                  title={c}
+                  className={`h-5 w-5 rounded-full border ${
+                    drawingColor === c ? "border-ink-900 ring-2 ring-indigo-300" : "border-ink-900/20"
+                  }`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <span className="mx-1 h-4 w-px bg-ink-900/15" />
+              <input
+                type="range"
+                min={1}
+                max={20}
+                step={0.5}
+                value={drawingWidth}
+                onChange={(ev) => setDrawingWidth(Number(ev.target.value))}
+                className="h-5 w-24"
+                title={`굵기 ${drawingWidth}px`}
+              />
+              <span className="text-[11px] tabular-nums text-ink-900/55">{drawingWidth.toFixed(1)}</span>
+              <span className="mx-1 h-4 w-px bg-ink-900/15" />
+              <button
+                type="button"
+                onClick={() => overlayHandleRef.current?.undo()}
+                title="되돌리기"
+                className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+              >
+                <IconUndo size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={() => overlayHandleRef.current?.redo()}
+                title="다시 실행"
+                className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+              >
+                <IconRedo size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (overlayStrokes.length === 0) return;
+                  const ok = await askConfirm({
+                    title: "그림 전체 삭제",
+                    message: "이 노트의 그림 레이어를 모두 지우시겠어요? 이 작업은 되돌리기로만 복구할 수 있어요.",
+                    confirmLabel: "전부 지우기",
+                  });
+                  if (!ok) return;
+                  overlayHandleRef.current?.clear();
+                }}
+                title="전부 지우기"
+                className="ml-1 rounded px-1.5 text-[11px] text-ink-900/55 hover:bg-black/5 hover:text-ink-900"
+              >
+                전부 지우기
+              </button>
+            </>
+          )}
+        </div>
+
         {/* 본문 */}
         <main className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10">
-          {/* 그리기 툴바 — 본문 상단 sticky. 그리기 모드 on/off 토글. */}
-          <div className="sticky top-0 z-30 -mx-6 -mt-6 mb-3 flex items-center gap-1 border-b border-ink-900/10 bg-[#fafaf9]/95 px-6 py-2 backdrop-blur md:-mx-10 md:px-10">
-            <button
-              type="button"
-              onClick={() => setDrawingMode((v) => !v)}
-              title={drawingMode ? "그리기 끄기" : "본문 위에 자유 그리기"}
-              aria-pressed={drawingMode}
-              className={`grid h-7 w-7 place-items-center rounded ${
-                drawingMode ? "bg-indigo-500 text-white" : "text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-              }`}
-            >
-              <IconBrush size={15} />
-            </button>
-            {drawingMode && (
-              <>
-                <span className="mx-1 h-4 w-px bg-ink-900/15" />
-                <button
-                  type="button"
-                  onClick={() => setDrawingTool("pen")}
-                  title="펜"
-                  aria-pressed={drawingTool === "pen"}
-                  className={`grid h-7 w-7 place-items-center rounded ${
-                    drawingTool === "pen" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                  }`}
-                >
-                  <IconBrush size={15} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDrawingTool("highlighter")}
-                  title="형광펜"
-                  aria-pressed={drawingTool === "highlighter"}
-                  className={`grid h-7 w-7 place-items-center rounded ${
-                    drawingTool === "highlighter" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                  }`}
-                >
-                  <IconHighlighter size={15} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDrawingTool("eraser")}
-                  title="지우개(stroke 단위)"
-                  aria-pressed={drawingTool === "eraser"}
-                  className={`grid h-7 w-7 place-items-center rounded ${
-                    drawingTool === "eraser" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                  }`}
-                >
-                  <IconEraser size={15} />
-                </button>
-                <span className="mx-1 h-4 w-px bg-ink-900/15" />
-                {/* 색 swatch */}
-                {["#1f2937", "#dc2626", "#2563eb", "#16a34a", "#f59e0b"].map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setDrawingColor(c)}
-                    title={c}
-                    className={`h-5 w-5 rounded-full border ${
-                      drawingColor === c ? "border-ink-900 ring-2 ring-indigo-300" : "border-ink-900/20"
-                    }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-                <span className="mx-1 h-4 w-px bg-ink-900/15" />
-                <input
-                  type="range"
-                  min={1}
-                  max={20}
-                  step={0.5}
-                  value={drawingWidth}
-                  onChange={(ev) => setDrawingWidth(Number(ev.target.value))}
-                  className="h-5 w-24"
-                  title={`굵기 ${drawingWidth}px`}
-                />
-                <span className="text-[11px] tabular-nums text-ink-900/55">{drawingWidth.toFixed(1)}</span>
-                <span className="mx-1 h-4 w-px bg-ink-900/15" />
-                <button
-                  type="button"
-                  onClick={() => overlayHandleRef.current?.undo()}
-                  title="되돌리기"
-                  className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-                >
-                  <IconUndo size={15} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => overlayHandleRef.current?.redo()}
-                  title="다시 실행"
-                  className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-                >
-                  <IconRedo size={15} />
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (overlayStrokes.length === 0) return;
-                    const ok = await askConfirm({
-                      title: "그림 전체 삭제",
-                      message: "이 노트의 그림 레이어를 모두 지우시겠어요? 이 작업은 되돌리기로만 복구할 수 있어요.",
-                      confirmLabel: "전부 지우기",
-                    });
-                    if (!ok) return;
-                    overlayHandleRef.current?.clear();
-                  }}
-                  title="전부 지우기"
-                  className="ml-1 rounded px-1.5 text-[11px] text-ink-900/55 hover:bg-black/5 hover:text-ink-900"
-                >
-                  전부 지우기
-                </button>
-              </>
-            )}
-          </div>
-
           {/* 본문 컨텐츠 + 그림 레이어를 같은 positioning context 에 둔다.
               그래야 absolute layer 가 본문과 함께 스크롤되고, 본문 폭에 정확히
               겹친다. */}
