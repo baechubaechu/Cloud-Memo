@@ -172,11 +172,14 @@ export function MemoWorkbench({
   const lastSentRef = useRef<{ title: string; content: string }>({ title: "", content: "" });
   // CodeMirror EditorView — onCreateEditor 에서 채워짐. 첨부 마커 삽입에 사용.
   const editorViewRef = useRef<EditorView | null>(null);
+  const [editorReady, setEditorReady] = useState(false);
   // 음성 녹음 상태
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordingStreamRef = useRef<MediaStream | null>(null);
+  // paste / drop 시 미디어 자동 삽입 — 최신 closure 를 ref 로 유지.
+  const insertFromInputRef = useRef<(file: File) => void | Promise<void>>(() => undefined);
   // True while a Korean/Japanese/Chinese IME is composing a character.
   // We must not run the autosave debounce timer during composition,
   // otherwise React re-renders mid-composition and the in-progress jamo
@@ -309,6 +312,61 @@ export function MemoWorkbench({
       mediaRecorderRef.current = null;
     };
   }, []);
+
+  // 에디터 DOM 에 paste / drop 으로 미디어가 들어오면 본문에 바로 삽입.
+  // - Ctrl+V: 클립보드의 이미지 / 파일
+  // - Drag & drop: 파일 드롭
+  useEffect(() => {
+    if (!editorReady) return;
+    const view = editorViewRef.current;
+    if (!view) return;
+    const dom = view.dom;
+    const onPaste = (ev: ClipboardEvent) => {
+      const dt = ev.clipboardData;
+      if (!dt) return;
+      const files: File[] = [];
+      // Chromium 은 items 에서 image 를 잡고, Firefox 는 files 에 직접 넣음.
+      if (dt.items && dt.items.length > 0) {
+        for (let i = 0; i < dt.items.length; i += 1) {
+          const it = dt.items[i];
+          if (it.kind === "file") {
+            const f = it.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      } else if (dt.files && dt.files.length > 0) {
+        for (let i = 0; i < dt.files.length; i += 1) files.push(dt.files[i]);
+      }
+      if (files.length === 0) return;
+      // 텍스트가 같이 들어왔다면 무시 — 미디어가 우선.
+      ev.preventDefault();
+      ev.stopPropagation();
+      for (const f of files) void insertFromInputRef.current(f);
+    };
+    const onDragOver = (ev: DragEvent) => {
+      if (ev.dataTransfer && Array.from(ev.dataTransfer.types).includes("Files")) {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "copy";
+      }
+    };
+    const onDrop = (ev: DragEvent) => {
+      const files = ev.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      for (let i = 0; i < files.length; i += 1) {
+        void insertFromInputRef.current(files[i]);
+      }
+    };
+    dom.addEventListener("paste", onPaste);
+    dom.addEventListener("dragover", onDragOver);
+    dom.addEventListener("drop", onDrop);
+    return () => {
+      dom.removeEventListener("paste", onPaste);
+      dom.removeEventListener("dragover", onDragOver);
+      dom.removeEventListener("drop", onDrop);
+    };
+  }, [editorReady]);
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQuery(query), 350);
@@ -958,6 +1016,11 @@ export function MemoWorkbench({
       handleApiError(e);
     }
   }
+
+  // paste/drop 핸들러가 항상 최신 uploadAndInsert 를 보도록 동기화.
+  useEffect(() => {
+    insertFromInputRef.current = uploadAndInsert;
+  });
 
   async function startAudioRecording() {
     if (isRecording) return;
@@ -2364,6 +2427,7 @@ export function MemoWorkbench({
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {
                 editorViewRef.current = view;
+                setEditorReady(true);
               }}
               onChange={(value) => {
                 setContent(value);
