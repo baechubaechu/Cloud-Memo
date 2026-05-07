@@ -33,8 +33,10 @@ import {
 import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
 import {
   cmEditorVisualTheme,
+  editorCursorTracker,
   editorMediaInputHandlers,
   editorMouseHandlers,
+  getLastDocCursor,
   hybridMarkdownField,
   setEditorAuthContext,
   setEditorInsertFile,
@@ -926,13 +928,26 @@ export function MemoWorkbench({
   // 본문 cursor 위치에 첨부 마커 텍스트를 삽입한다.
   // - 위 / 아래에 빈 줄을 넣어 한 줄짜리 미디어 블록으로 보이게 한다.
   // - 삽입 후 caret을 마커 다음 줄로 옮긴다.
+  //
+  // 삽입 위치 우선순위:
+  //   1) 본문 (CodeMirror) 가 현재 포커스를 가지고 있으면 → state.selection
+  //   2) 그렇지 않으면 (제목 input / 툴바 버튼 / 외부 drop 등) → 사용자가
+  //      마지막으로 본문에 둔 캐럿 (__lastDocCursor)
+  //   3) 마지막 캐럿이 0 이고 본문 포커스도 없으면 → 그냥 0 (top). 사용자가
+  //      본문을 한 번도 만진 적이 없는 진짜 fresh 노트 케이스.
   function insertMarkerAtCursor(marker: string): boolean {
     const view = editorViewRef.current;
     if (!view) return false;
-    const sel = view.state.selection.main;
     const doc = view.state.doc;
-    const lineAtFrom = doc.lineAt(sel.from);
-    const atLineStart = sel.from === lineAtFrom.from;
+    const stateFrom = view.state.selection.main.from;
+    const stateTo = view.state.selection.main.to;
+    const useStateSelection = view.hasFocus;
+    const insertFrom = useStateSelection
+      ? stateFrom
+      : Math.min(getLastDocCursor(), doc.length);
+    const insertTo = useStateSelection ? stateTo : insertFrom;
+    const lineAtFrom = doc.lineAt(insertFrom);
+    const atLineStart = insertFrom === lineAtFrom.from;
     const lineEmpty = lineAtFrom.text.trim().length === 0;
     let prefix = "";
     let suffix = "\n";
@@ -940,8 +955,8 @@ export function MemoWorkbench({
     else if (!lineEmpty) prefix = "";
     const insertText = `${prefix}${marker}${suffix}`;
     view.dispatch({
-      changes: { from: sel.from, to: sel.to, insert: insertText },
-      selection: { anchor: sel.from + insertText.length },
+      changes: { from: insertFrom, to: insertTo, insert: insertText },
+      selection: { anchor: insertFrom + insertText.length },
       scrollIntoView: true,
     });
     view.focus();
@@ -2388,6 +2403,7 @@ export function MemoWorkbench({
                 cmEditorVisualTheme,
                 editorMouseHandlers,
                 editorMediaInputHandlers,
+                editorCursorTracker,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {

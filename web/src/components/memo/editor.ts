@@ -27,6 +27,19 @@ export function setEditorInsertFile(fn: InsertFileFn | null): void {
   __insertFile = fn;
 }
 
+// 본문에서 사용자가 마지막으로 둔 캐럿 위치. 제목 input 처럼 본문 바깥에 포커스가
+// 가 있을 때도 "본문 어디에 마커를 넣어야 할지" 를 정하기 위해 따로 추적한다.
+// updateListener 가 selectionSet 일 때마다 갱신한다.
+let __lastDocCursor = 0;
+export function getLastDocCursor(): number {
+  return __lastDocCursor;
+}
+export const editorCursorTracker = EditorView.updateListener.of((u) => {
+  if (u.selectionSet || u.docChanged) {
+    __lastDocCursor = Math.min(u.state.selection.main.from, u.state.doc.length);
+  }
+});
+
 const __blobCache = new Map<string, string>();
 function getBlobUrlFor(kind: "image" | "audio" | "file", attId: string): Promise<string | null> {
   const key = `${kind}:${attId}`;
@@ -60,7 +73,9 @@ function hydrateAttachmentsIn(root: HTMLElement): void {
     if (kind === "image") {
       const img = document.createElement("img");
       img.alt = label;
-      img.className = "memo-attachment-img max-h-[60vh] max-w-full rounded-lg border border-ink-900/10";
+      // 기본 크기: 너무 크면 한 줄짜리 위젯이 거대해져서 캐럿 처리/스크롤이 어색해진다.
+      // 일단 360px 까지로 잡고, 진짜 크게 보고 싶으면 클릭해서 새 창으로 열게 한다.
+      img.className = "memo-attachment-img max-h-[360px] max-w-full rounded-lg border border-ink-900/10";
       img.style.display = "block";
       img.style.userSelect = "none";
       img.draggable = false;
@@ -203,14 +218,27 @@ export class RenderedMarkdownLineWidget extends WidgetType {
         view.focus();
         return;
       }
-      // 첨부 줄(이미지/오디오/파일)은 캐럿을 줄 끝으로만 보낸다. 렌더된 미디어
-      // 안쪽에서 글자 단위로 캐럿을 잡으면 의도치 않게 마커 텍스트를 편집해서
-      // 다음 렌더 사이클에 raw 마크다운으로 돌아가는 문제가 생긴다.
+      // 첨부 줄(이미지/오디오/파일)을 클릭했을 때:
+      // - 캐럿을 그 줄에 두면 위젯 높이만큼 캐럿이 거대해져 글자처럼 보이는
+      //   문제가 생긴다.
+      // - 그래서 다음 줄 시작점으로 캐럿을 옮겨서 일반 텍스트 줄에 캐럿이
+      //   놓이게 한다. 다음 줄이 없으면 새 줄을 만들어서라도 그 자리에 둔다.
       if (isAttachment) {
-        view.dispatch({
-          selection: { anchor: lineTo },
-          scrollIntoView: true,
-        });
+        const docLen = view.state.doc.length;
+        if (lineTo < docLen) {
+          // 다음 줄이 이미 있으면 그 시작점으로.
+          view.dispatch({
+            selection: { anchor: lineTo + 1 },
+            scrollIntoView: true,
+          });
+        } else {
+          // 마지막 줄이라 다음 줄이 없다면 줄바꿈을 만들고 거기로 보낸다.
+          view.dispatch({
+            changes: { from: docLen, to: docLen, insert: "\n" },
+            selection: { anchor: docLen + 1 },
+            scrollIntoView: true,
+          });
+        }
         view.focus();
         return;
       }
@@ -356,17 +384,14 @@ export const editorMediaInputHandlers = EditorView.domEventHandlers({
     }
     return false;
   },
-  drop(ev, view) {
+  drop(ev, _view) {
     const files = collectFilesFromTransfer(ev.dataTransfer);
     if (files.length === 0) return false;
     ev.preventDefault();
     ev.stopPropagation();
-    // 드롭 좌표를 캐럿 위치로 옮긴 뒤 그 자리에 마커가 들어가도록 한다.
-    const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
-    if (typeof pos === "number") {
-      view.dispatch({ selection: { anchor: pos } });
-      view.focus();
-    }
+    // 사용자 요청: "본문 구역 어디에나 드랍해도 현재 커서 깜빡거리는 위치에"
+    // → 드롭 좌표는 무시하고 본문 currentcursor (insertMarkerAtCursor 안에서
+    //    state.selection / __lastDocCursor 를 같이 본다) 자리에 삽입한다.
     const fn = __insertFile;
     if (!fn) return true;
     for (const f of files) fn(f);
