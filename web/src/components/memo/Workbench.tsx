@@ -38,11 +38,14 @@ import {
 import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
 import {
   cmEditorVisualTheme,
+  editorChecklistAutoTrigger,
   editorCursorBackupSync,
   editorCursorTracker,
   editorMediaInputHandlers,
   editorMouseHandlers,
   editorNavAndDeleteKeymap,
+  editorQuoteEnterKeymap,
+  editorUndoRedoKeymap,
   getLastDocCursor,
   hybridMarkdownField,
   isLastDocCursorExplicit,
@@ -71,6 +74,7 @@ import {
   type ReactElement,
 } from "react";
 
+import { parseChecklistLine } from "./markdown";
 import type {
   Attachment,
   Folder,
@@ -93,6 +97,24 @@ type Panel = "nav" | "list" | "editor";
 
 type ListMode = "active" | "favorite" | "archive";
 
+type TodoPanelItem = {
+  id: string;
+  noteId: string;
+  noteTitle: string;
+  lineIndex: number;
+  checked: boolean;
+  text: string;
+};
+
+type SlashMenuState = {
+  from: number;
+  to: number;
+  query: string;
+  /** 캐럿 위치의 뷰포트 픽셀 좌표 (메뉴를 그 옆에 띄우기 위해 저장). */
+  x: number;
+  y: number;
+} | null;
+
 // (REASON_LABEL, formatBytes, formatDateTime, compareName, DND 상수, dndHasMime 은 ./utils 로 이동)
 // (escapeHtml 등 마크다운 렌더링은 ./markdown 으로 이동)
 // (CodeMirror 위젯/상태/테마/이벤트 핸들러는 ./editor 로 이동)
@@ -104,6 +126,31 @@ function overlaySignature(strokes: OverlayStroke[]): string {
   // 길이 + 마지막 stroke id + 마지막 점 개수만 보면 일반 편집에서 충돌은 없다.
   // (서버 응답이 들어와도 같은 길이 + 같은 last id 면 동일하다고 본다.)
   return `${strokes.length}:${last?.id ?? ""}:${last?.points?.length ?? 0}`;
+}
+
+function todayNoteTitle(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function extractTodoItems(note: { id: string; title: string }, content: string): TodoPanelItem[] {
+  return content.split("\n").flatMap((line, index) => {
+    const item = parseChecklistLine(line);
+    if (!item) return [];
+    return [
+      {
+        id: `${note.id}:${index}`,
+        noteId: note.id,
+        noteTitle: note.title || "제목 없음",
+        lineIndex: index,
+        checked: item.checked,
+        text: item.text.trim() || "(빈 할 일)",
+      },
+    ];
+  });
 }
 
 export function MemoWorkbench({
@@ -137,8 +184,10 @@ export function MemoWorkbench({
   const [panel, setPanel] = useState<Panel>("list");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
-  // 데스크탑 우측 토글 패널: 평소엔 닫혀있고 버튼으로 "파일" / "버전" 중 하나 표시
-  const [rightPanel, setRightPanel] = useState<"files" | "versions" | null>(null);
+  // 데스크탑 우측 토글 패널: 평소엔 닫혀있고 버튼으로 파일/버전/할 일 중 하나 표시
+  const [rightPanel, setRightPanel] = useState<"files" | "versions" | "todos" | null>(null);
+  const [todoItems, setTodoItems] = useState<TodoPanelItem[]>([]);
+  const [todoLoading, setTodoLoading] = useState(false);
   // 옵시디언풍 폴더 트리: 어떤 폴더가 펼쳐져 있는지
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   // 우클릭 컨텍스트 메뉴 (폴더 / 노트 / 빈 영역)
@@ -213,6 +262,18 @@ export function MemoWorkbench({
   const overlayTimerRef = useRef<number | null>(null);
   // CodeMirror EditorView — onCreateEditor 에서 채워짐. 첨부 마커 삽입에 사용.
   const editorViewRef = useRef<EditorView | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const commandInputRef = useRef<HTMLInputElement | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [slashMenu, setSlashMenu] = useState<SlashMenuState>(null);
+  // 슬래시 메뉴에서 키보드/호버로 선택 중인 항목 인덱스. 메뉴가 열려 있는 동안만 의미 있음.
+  const [slashSelected, setSlashSelected] = useState(0);
+  // 슬래시 메뉴 업데이트 함수의 최신 closure 를 CodeMirror 확장에서 호출하기 위한 ref.
+  // (React onChange 에만 의존하면 일부 입력에서 누락되는 케이스가 있어 직접 listener 로 옮긴다.)
+  const updateSlashMenuRef = useRef<(view: EditorView) => void>(() => {});
+  // 새 노트를 만든 직후 제목 input 으로 포커스를 자동 이동시킬지.
+  const [autoFocusTitle, setAutoFocusTitle] = useState(false);
   // 음성 녹음 상태
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -525,6 +586,85 @@ export function MemoWorkbench({
     }, 900);
   }, [activeNote, activeNoteId, flushAutosave]);
 
+  const refreshTodoItems = useCallback(async () => {
+    if (!token) return;
+    setTodoLoading(true);
+    try {
+      const rows = await api.listNotes(token, { archived: false, trash: false });
+      const details = await Promise.all(rows.map((n) => api.getNote(token, n.id)));
+      const items = details.flatMap((note) => {
+        const sourceContent = activeNoteId === note.id ? content : note.content;
+        const sourceTitle = activeNoteId === note.id ? title : note.title;
+        return extractTodoItems({ id: note.id, title: sourceTitle }, sourceContent);
+      });
+      setTodoItems(items);
+    } catch (e) {
+      handleApiError(e);
+    } finally {
+      setTodoLoading(false);
+    }
+  }, [activeNoteId, content, handleApiError, title, token]);
+
+  useEffect(() => {
+    if (rightPanel !== "todos") return;
+    void refreshTodoItems();
+    // 우측 패널을 "할 일"로 열 때 전체 노트를 한 번 훑는다. content 변경마다
+    // 전체 노트를 다시 가져오면 입력 중 과도한 API 호출이 생기므로 수동
+    // 새로고침과 패널 내 토글로 갱신한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightPanel]);
+
+  const toggleTodoFromPanel = useCallback(
+    async (item: TodoPanelItem) => {
+      try {
+        const isActive = activeNoteId === item.noteId && !!activeNote;
+        const note = isActive ? activeNote : await api.getNote(token, item.noteId);
+        const sourceContent = isActive ? content : note.content;
+        const lines = sourceContent.split("\n");
+        const rawLine = lines[item.lineIndex] ?? "";
+        const parsed = parseChecklistLine(rawLine);
+        if (!parsed) {
+          await refreshTodoItems();
+          return;
+        }
+        const nextChar = parsed.checked ? " " : "x";
+        lines[item.lineIndex] =
+          rawLine.slice(0, parsed.stateOffset) + nextChar + rawLine.slice(parsed.stateOffset + 1);
+        const nextContent = lines.join("\n");
+        const updated = await api.patchNote(token, item.noteId, {
+          content: nextContent,
+          title: isActive ? title : note.title,
+          tag_ids: note.tags.map((x) => x.id),
+          folder_id: note.folder_id ?? null,
+        });
+        if (isActive) {
+          setContent(nextContent);
+          setActiveNote(updated);
+          lastSentRef.current = {
+            ...lastSentRef.current,
+            title,
+            content: nextContent,
+          };
+          setSaveState("saved");
+        }
+        setTodoItems((prev) =>
+          prev.map((x) =>
+            x.id === item.id
+              ? {
+                  ...x,
+                  checked: !parsed.checked,
+                }
+              : x,
+          ),
+        );
+        void reloadNotes();
+      } catch (e) {
+        handleApiError(e);
+      }
+    },
+    [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, title, token],
+  );
+
   const handleCompositionStart = useCallback(() => {
     composingRef.current = true;
     if (saveTimerRef.current) {
@@ -569,6 +709,86 @@ export function MemoWorkbench({
     window.setTimeout(focusTitle, 0);
     window.setTimeout(focusTitle, 120);
   }, [activeNoteId, activeNote]);
+
+  // useLayoutEffect 가 놓치는 케이스(다른 컴포넌트가 await 사이에 포커스를 가져
+  // 가버리는 등) 를 보강하기 위해, 새 노트를 만든 직후 호출자 쪽에서 한 번 더
+  // 명시적으로 제목 input 에 캐럿을 넣어준다.
+  // 새 노트 직후 제목 input 으로 캐럿을 옮긴다. 단순히 한두 번 focus() 를
+  // 부르는 것만으로는 (CodeMirror 마운트, 자동저장, 다른 이펙트가 await 중간에
+  // 끼면서) 포커스가 다시 빼앗기는 케이스가 잡힌다. 그래서 짧은 간격으로
+  // 짧게 폴링하다가 input 이 실제로 활성 element 가 되면 멈춘다.
+  function focusTitleSoon(): void {
+    setAutoFocusTitle(true);
+    let attempts = 0;
+    const maxAttempts = 25; // ~1.5s at 60ms
+    const tryFocus = () => {
+      const el = titleInputRef.current;
+      const before = document.activeElement;
+      if (el && document.activeElement !== el) {
+        try {
+          el.focus({ preventScroll: true });
+          el.select();
+        } catch {
+          /* noop */
+        }
+      }
+      const after = document.activeElement;
+      // eslint-disable-next-line no-console
+      console.log("[title-focus]", {
+        attempt: attempts,
+        hasEl: !!el,
+        beforeTag: before?.tagName,
+        beforeCls: (before as HTMLElement | null)?.className?.slice?.(0, 60),
+        afterTag: after?.tagName,
+        afterCls: (after as HTMLElement | null)?.className?.slice?.(0, 60),
+      });
+      if (el && document.activeElement === el) {
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        window.setTimeout(tryFocus, 60);
+      }
+    };
+    requestAnimationFrame(tryFocus);
+  }
+
+  // autoFocusTitle 가 true 면, 활성 노트가 바뀔 때마다 title input 이 마운트되는
+  // 첫 시점에 강제로 포커스를 잡는다. 한 번 포커스가 들어가면 플래그를 내린다.
+  useEffect(() => {
+    if (!autoFocusTitle) return;
+    if (!activeNote || activeNote.deleted_at) return;
+    const tryFocus = () => {
+      const el = titleInputRef.current;
+      if (!el) return false;
+      el.focus({ preventScroll: true });
+      try {
+        el.select();
+      } catch {
+        /* noop */
+      }
+      return document.activeElement === el;
+    };
+    if (tryFocus()) {
+      setAutoFocusTitle(false);
+      return;
+    }
+    const id1 = window.requestAnimationFrame(() => {
+      if (tryFocus()) setAutoFocusTitle(false);
+    });
+    const id2 = window.setTimeout(() => {
+      if (tryFocus()) setAutoFocusTitle(false);
+    }, 80);
+    const id3 = window.setTimeout(() => {
+      tryFocus();
+      setAutoFocusTitle(false);
+    }, 240);
+    return () => {
+      window.cancelAnimationFrame(id1);
+      window.clearTimeout(id2);
+      window.clearTimeout(id3);
+    };
+  }, [autoFocusTitle, activeNote?.id]);
 
   // 컨텍스트 메뉴: ESC 또는 바깥 클릭으로 닫기.
   // 메뉴 안 클릭은 무시해야 메뉴 버튼 onClick이 정상 발화한다.
@@ -688,6 +908,7 @@ export function MemoWorkbench({
         });
       }
       if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
+      focusTitleSoon();
     } catch (e) {
       handleApiError(e);
     }
@@ -874,6 +1095,32 @@ export function MemoWorkbench({
       pendingFocusNewNoteRef.current = draft.id;
       await reloadNotes();
       await loadNote(draft.id);
+      focusTitleSoon();
+    } catch (e) {
+      handleApiError(e);
+    }
+  }
+
+  async function handleOpenTodayNote() {
+    try {
+      setError(null);
+      const dailyTitle = todayNoteTitle();
+      const rows = await api.listNotes(token, { archived: false, trash: false });
+      const existing = rows.find((n) => (n.title || "").trim() === dailyTitle);
+      if (existing) {
+        await loadNote(existing.id);
+        return;
+      }
+      const draft = await api.createNote(token, {
+        title: dailyTitle,
+        content: `# ${dailyTitle}\n\n`,
+        folder_id: null,
+        tag_ids: [],
+      });
+      pendingFocusNewNoteRef.current = draft.id;
+      await reloadNotes();
+      await loadNote(draft.id);
+      focusTitleSoon();
     } catch (e) {
       handleApiError(e);
     }
@@ -1059,6 +1306,118 @@ export function MemoWorkbench({
     return true;
   }
 
+  function insertTextAtCursor(insertText: string): boolean {
+    const view = editorViewRef.current;
+    if (!view) return false;
+    const doc = view.state.doc;
+    let chosen: number;
+    if (view.hasFocus) {
+      chosen = view.state.selection.main.from;
+    } else if (isLastDocCursorExplicit()) {
+      chosen = getLastDocCursor();
+    } else {
+      chosen = doc.length;
+    }
+    chosen = Math.min(Math.max(0, chosen), doc.length);
+    view.dispatch({
+      changes: { from: chosen, to: chosen, insert: insertText },
+      selection: { anchor: chosen + insertText.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  function replaceSlashCommand(insertText: string): boolean {
+    const view = editorViewRef.current;
+    if (!view || !slashMenu) return insertTextAtCursor(insertText);
+    // 클릭/Enter 시점에 view.state.selection 을 다시 읽으면, 일부 환경에서
+    // 포커스 이동/이벤트 순서 때문에 selection 이 0 으로 초기화돼 본문 맨
+    // 앞에 박혀버리는 사고가 난다. 그래서 메뉴를 열었을 때 잡아둔
+    // slashMenu.from / slashMenu.to 를 그대로 신뢰해 사용한다.
+    const docLen = view.state.doc.length;
+    const from = Math.min(Math.max(0, slashMenu.from), docLen);
+    const to = Math.min(Math.max(from, slashMenu.to), docLen);
+    view.dispatch({
+      changes: { from, to, insert: insertText },
+      selection: { anchor: from + insertText.length },
+      scrollIntoView: true,
+    });
+    // 실행 직후 무조건 메뉴 닫기. 같은 update 사이클에서 listener 가 다시
+    // 발동해 재오픈되는 걸 막기 위해 setSlashMenu 도 즉시 호출한다.
+    setSlashMenu(null);
+    setSlashSelected(0);
+    // setSlashMenu state flush 후 포커스를 잡아 다음 keydown 이 본문으로 들어가게.
+    requestAnimationFrame(() => view.focus());
+    return true;
+  }
+
+  function updateSlashMenuFromView(view: EditorView): void {
+    const sel = view.state.selection.main;
+    if (!sel.empty) {
+      setSlashMenu((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const line = view.state.doc.lineAt(sel.head);
+    const beforeCursor = line.text.slice(0, sel.head - line.from);
+    const match = beforeCursor.match(/(^|\s)\/([\w가-힣]*)$/);
+    if (!match) {
+      setSlashMenu((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const queryText = match[2] ?? "";
+    const from = sel.head - queryText.length - 1;
+    // 캐럿 픽셀 좌표를 잡아 메뉴를 바로 옆에 띄운다. coordsAtPos 가 null 이면
+    // (마운트 직후/가상화) 화면 좌상단쯤으로 fallback.
+    let x = 24;
+    let y = 80;
+    const cursorRect = view.coordsAtPos(sel.head);
+    if (cursorRect) {
+      x = cursorRect.left;
+      y = cursorRect.bottom + 4;
+    }
+    setSlashMenu((prev) => {
+      // 같은 위치/쿼리면 재할당하지 않아 무한 렌더 루프를 막는다. listener 가
+      // reconfigure 등 비입력 update 에도 fire 되기 때문에 필수 가드.
+      if (
+        prev &&
+        prev.from === from &&
+        prev.to === sel.head &&
+        prev.query === queryText &&
+        prev.x === x &&
+        prev.y === y
+      ) {
+        return prev;
+      }
+      return { from, to: sel.head, query: queryText, x, y };
+    });
+  }
+
+  // 매 렌더마다 최신 함수를 ref 에 저장해서 stable extension 안에서 호출.
+  updateSlashMenuRef.current = (view: EditorView) => updateSlashMenuFromView(view);
+
+  // CodeMirror 입력/선택 변경 시 슬래시 메뉴 후보를 다시 평가한다.
+  // updateListener 가 한 박자 늦게 fire 되는 환경(IME 조합 직후 등) 을 대비해
+  // native input/keyup 에서도 한 번 더 평가하고, onChange 에서도 직접 부른다.
+  const slashMenuExtension = useMemo(
+    () => [
+      EditorView.updateListener.of((u) => {
+        if (!u.docChanged && !u.selectionSet && !u.focusChanged) return;
+        const view = u.view;
+        queueMicrotask(() => updateSlashMenuRef.current(view));
+      }),
+      EditorView.domEventHandlers({
+        input: (_e, view) => {
+          queueMicrotask(() => updateSlashMenuRef.current(view));
+        },
+        keyup: (_e, view) => {
+          queueMicrotask(() => updateSlashMenuRef.current(view));
+        },
+      }),
+    ],
+    [],
+  );
+
   function buildAttachmentMarker(att: { id: string; original_filename: string; kind?: string }): string {
     const safeName = att.original_filename.replaceAll("]", "").replaceAll("[", "");
     if (att.kind === "image") return `![${safeName}](attachment://${att.id})`;
@@ -1193,6 +1552,230 @@ export function MemoWorkbench({
       handleApiError(e);
     }
   }
+
+  function openCommandPalette() {
+    setCommandQuery("");
+    setCommandPaletteOpen(true);
+  }
+
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === "k" || ev.key.toLowerCase() === "p")) {
+        ev.preventDefault();
+        openCommandPalette();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!commandPaletteOpen) return;
+    window.setTimeout(() => commandInputRef.current?.focus(), 0);
+  }, [commandPaletteOpen]);
+
+  const appCommands = [
+    {
+      id: "new-note",
+      title: "새 노트",
+      description: "루트에 빈 노트를 만들고 제목 입력으로 이동",
+      shortcut: "N",
+      keywords: "new note 새노트",
+      run: () => void handleNewNote(),
+    },
+    {
+      id: "today-note",
+      title: "오늘 노트 열기",
+      description: `${todayNoteTitle()} 노트를 열거나 새로 만들기`,
+      shortcut: "Daily",
+      keywords: "daily today 오늘 데일리 날짜",
+      run: () => void handleOpenTodayNote(),
+    },
+    {
+      id: "insert-image",
+      title: "이미지 삽입",
+      description: "현재 본문 캐럿 위치에 이미지 업로드",
+      shortcut: "/이미지",
+      keywords: "image photo picture 이미지 사진",
+      disabled: !activeNoteId,
+      run: () => imageInputRef.current?.click(),
+    },
+    {
+      id: "toggle-drawing",
+      title: drawingMode ? "그리기 모드 끄기" : "그리기 모드 켜기",
+      description: "본문 위 자유 필기 레이어 토글",
+      shortcut: "/그림",
+      keywords: "draw canvas pen 그림 필기",
+      disabled: !activeNoteId,
+      run: () => setDrawingMode((v) => !v),
+    },
+    {
+      id: "todos-panel",
+      title: "모든 할 일 보기",
+      description: "우측 패널에서 전체 체크리스트 모아보기",
+      shortcut: "Todos",
+      keywords: "todo checklist 할일 체크리스트",
+      disabled: !activeNoteId,
+      run: () => setRightPanel(rightPanel === "todos" ? null : "todos"),
+    },
+    {
+      id: "files-panel",
+      title: "첨부 패널 열기",
+      description: "현재 노트의 첨부 파일 보기",
+      keywords: "file attachment 첨부 파일",
+      disabled: !activeNoteId,
+      run: () => setRightPanel(rightPanel === "files" ? null : "files"),
+    },
+    {
+      id: "versions-panel",
+      title: "버전 히스토리 열기",
+      description: "현재 노트의 저장 버전 확인",
+      keywords: "version history 버전 히스토리",
+      disabled: !activeNoteId,
+      run: () => setRightPanel(rightPanel === "versions" ? null : "versions"),
+    },
+    {
+      id: "focus-search",
+      title: "검색으로 이동",
+      description: "사이드바 검색창에 포커스",
+      shortcut: "Search",
+      keywords: "search find 검색 찾기",
+      run: () => {
+        setSidebarCollapsed(false);
+        searchInputRef.current?.focus();
+      },
+    },
+    {
+      id: "export-markdown",
+      title: "Markdown 내보내기",
+      description: "전체 노트 Markdown export 다운로드",
+      keywords: "export markdown 내보내기 백업",
+      run: () => void handleExport(),
+    },
+  ];
+
+  const commandNeedle = commandQuery.trim().toLowerCase();
+  const filteredAppCommands = appCommands.filter((cmd) => {
+    if (!commandNeedle) return true;
+    return `${cmd.title} ${cmd.description} ${cmd.keywords}`.toLowerCase().includes(commandNeedle);
+  });
+
+  const slashCommands = [
+    {
+      id: "todo",
+      title: "체크리스트",
+      description: "체크박스 할 일 항목 삽입",
+      keywords: "todo checklist 체크 할일",
+      run: () => replaceSlashCommand("- [ ] "),
+    },
+    {
+      id: "h1",
+      title: "제목 1",
+      description: "큰 제목 삽입",
+      keywords: "heading h1 제목",
+      run: () => replaceSlashCommand("# "),
+    },
+    {
+      id: "h2",
+      title: "제목 2",
+      description: "중간 제목 삽입",
+      keywords: "heading h2 제목",
+      run: () => replaceSlashCommand("## "),
+    },
+    {
+      id: "quote",
+      title: "인용",
+      description: "인용 블록 삽입",
+      keywords: "quote blockquote 인용",
+      run: () => replaceSlashCommand("> "),
+    },
+    {
+      id: "date-link",
+      title: "오늘 날짜 링크",
+      description: `[[${todayNoteTitle()}]] 삽입`,
+      keywords: "date today daily 날짜 오늘",
+      run: () => replaceSlashCommand(`[[${todayNoteTitle()}]]`),
+    },
+    {
+      id: "image",
+      title: "이미지",
+      description: "이미지를 업로드해 현재 위치에 삽입",
+      keywords: "image photo 이미지 사진",
+      run: () => {
+        replaceSlashCommand("");
+        imageInputRef.current?.click();
+      },
+    },
+    {
+      id: "drawing",
+      title: "그리기",
+      description: "본문 위 자유 필기 모드 켜기",
+      keywords: "draw canvas 그림 필기",
+      run: () => {
+        replaceSlashCommand("");
+        setDrawingMode(true);
+      },
+    },
+    {
+      id: "audio",
+      title: "음성 녹음",
+      description: "녹음을 시작하고 완료 후 본문에 첨부",
+      keywords: "audio mic voice 음성 녹음",
+      run: () => {
+        replaceSlashCommand("");
+        void startAudioRecording();
+      },
+    },
+  ];
+
+  const slashNeedle = slashMenu?.query.trim().toLowerCase() ?? "";
+  const filteredSlashCommands = slashCommands.filter((cmd) => {
+    if (!slashNeedle) return true;
+    return `${cmd.title} ${cmd.description} ${cmd.keywords}`.toLowerCase().includes(slashNeedle);
+  });
+
+  // 메뉴 열림 / 쿼리 변동 시 선택 인덱스 0 으로 리셋. 필터 결과가 줄어들면
+  // 인덱스가 범위 밖으로 갈 수 있어서 그것도 클램프한다.
+  useEffect(() => {
+    if (!slashMenu) {
+      setSlashSelected(0);
+      return;
+    }
+    setSlashSelected((prev) => {
+      const max = Math.max(0, filteredSlashCommands.length - 1);
+      if (prev > max) return 0;
+      return prev;
+    });
+  }, [slashMenu?.from, slashMenu?.query, filteredSlashCommands.length]);
+
+  useEffect(() => {
+    if (!slashMenu) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        setSlashMenu(null);
+        return;
+      }
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        setSlashSelected((i) => Math.min(filteredSlashCommands.length - 1, i + 1));
+        return;
+      }
+      if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        setSlashSelected((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (ev.key === "Enter" || ev.key === "Tab") {
+        const cmd = filteredSlashCommands[slashSelected] ?? filteredSlashCommands[0];
+        if (!cmd) return;
+        ev.preventDefault();
+        cmd.run();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [filteredSlashCommands, slashMenu, slashSelected]);
 
   // ---------- Render ----------
 
@@ -2338,6 +2921,7 @@ export function MemoWorkbench({
             >
               <IconImage size={15} />
               <input
+                ref={imageInputRef}
                 type="file"
                 accept="image/*"
                 className="hidden"
@@ -2393,7 +2977,7 @@ export function MemoWorkbench({
               />
             </label>
 
-            {/* 우측 패널 토글: 첨부 / 버전 */}
+            {/* 우측 패널 토글: 첨부 / 할 일 / 버전 */}
             <span className="mx-1 h-4 w-px bg-ink-900/10" aria-hidden="true" />
             <button
               type="button"
@@ -2405,6 +2989,17 @@ export function MemoWorkbench({
               }`}
             >
               <IconPaperclip size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setRightPanel(rightPanel === "todos" ? null : "todos")}
+              title="모든 할 일"
+              aria-label="모든 할 일 토글"
+              className={`grid h-7 w-7 place-items-center rounded ${
+                rightPanel === "todos" ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
+              }`}
+            >
+              <IconList size={15} />
             </button>
             <button
               type="button"
@@ -2600,7 +3195,7 @@ export function MemoWorkbench({
             </details>
           </div>
 
-          <section className="mx-auto w-full max-w-3xl min-h-[62dvh] py-2">
+          <section className="relative mx-auto w-full max-w-3xl min-h-[62dvh] py-2">
             <CodeMirror
               value={content}
               height="auto"
@@ -2619,7 +3214,11 @@ export function MemoWorkbench({
                 editorMediaInputHandlers,
                 editorCursorTracker,
                 editorCursorBackupSync,
+                editorChecklistAutoTrigger,
+                editorUndoRedoKeymap,
+                editorQuoteEnterKeymap,
                 editorNavAndDeleteKeymap,
+                slashMenuExtension,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {
@@ -2628,9 +3227,50 @@ export function MemoWorkbench({
               onChange={(value) => {
                 setContent(value);
                 if (!composingRef.current) scheduleAutosave();
+                // 슬래시 커맨드: onChange 도 즉시 평가해서 메뉴를 갱신.
+                const view = editorViewRef.current;
+                if (view) updateSlashMenuFromView(view);
               }}
               className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
             />
+            {slashMenu && filteredSlashCommands.length > 0 ? (
+              <div
+                className="fixed z-[70] w-72 overflow-hidden rounded-xl border border-ink-900/12 bg-white text-[13px] shadow-xl"
+                style={{ left: slashMenu.x, top: slashMenu.y }}
+              >
+                <div className="border-b border-ink-900/8 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-900/40">
+                  슬래시 커맨드 · ↑↓ 이동 · Enter 실행 · Esc 닫기
+                </div>
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {filteredSlashCommands.slice(0, 8).map((cmd, idx) => {
+                    const selected = idx === slashSelected;
+                    return (
+                      <button
+                        key={cmd.id}
+                        type="button"
+                        className={`block w-full px-3 py-2 text-left ${
+                          selected ? "bg-indigo-50" : "hover:bg-black/5"
+                        }`}
+                        onMouseDown={(ev) => ev.preventDefault()}
+                        onMouseEnter={() => setSlashSelected(idx)}
+                        onClick={() => cmd.run()}
+                      >
+                        <span
+                          className={`block font-semibold ${
+                            selected ? "text-indigo-700" : "text-ink-900"
+                          }`}
+                        >
+                          {cmd.title}
+                        </span>
+                        <span className="block text-[11px] text-ink-900/45">
+                          {cmd.description}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
           </section>
           {/* 본문 위에 떠 있는 자유 그림 레이어. drawingMode 가 false 면 입력
               이 통과돼서 텍스트 편집에 영향 없음. */}
@@ -2649,7 +3289,7 @@ export function MemoWorkbench({
     );
   }
 
-  // ---------- 우측 토글 패널: 첨부 / 버전 ----------
+  // ---------- 우측 토글 패널: 첨부 / 할 일 / 버전 ----------
   const rightPanelCard =
     activeNote && !activeNote.deleted_at && rightPanel ? (
       <aside className="flex h-full min-w-0 flex-col border-l border-ink-900/10 bg-[#fafaf9]">
@@ -2667,6 +3307,13 @@ export function MemoWorkbench({
             className={`rounded px-2 py-0.5 ${rightPanel === "versions" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"}`}
           >
             버전
+          </button>
+          <button
+            type="button"
+            onClick={() => setRightPanel("todos")}
+            className={`rounded px-2 py-0.5 ${rightPanel === "todos" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"}`}
+          >
+            할 일
           </button>
           <button
             type="button"
@@ -2725,6 +3372,80 @@ export function MemoWorkbench({
                 ));
               })()}
             </div>
+          ) : rightPanel === "todos" ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[12px] font-semibold text-ink-900">모든 할 일</p>
+                  <p className="text-[11px] text-ink-900/45">
+                    미완료 {todoItems.filter((x) => !x.checked).length}개 · 완료{" "}
+                    {todoItems.filter((x) => x.checked).length}개
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void refreshTodoItems()}
+                  className="rounded border border-ink-900/10 bg-white px-2 py-1 text-[11px] text-ink-900/60 hover:bg-black/5"
+                >
+                  새로고침
+                </button>
+              </div>
+              {todoLoading ? (
+                <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
+                  할 일을 불러오는 중…
+                </p>
+              ) : todoItems.length === 0 ? (
+                <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
+                  아직 체크리스트가 없습니다. 본문에 <span className="font-mono">- [ ] 할 일</span> 로 작성해보세요.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {todoItems
+                    .slice()
+                    .sort((a, b) => Number(a.checked) - Number(b.checked) || a.noteTitle.localeCompare(b.noteTitle))
+                    .map((item) => (
+                      <article
+                        key={item.id}
+                        className={`rounded border border-ink-900/10 bg-white p-2 ${
+                          item.checked ? "opacity-60" : ""
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <button
+                            type="button"
+                            aria-label={item.checked ? "할 일 미완료로 바꾸기" : "할 일 완료로 바꾸기"}
+                            aria-pressed={item.checked}
+                            onClick={() => void toggleTodoFromPanel(item)}
+                            className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border text-[11px] leading-none ${
+                              item.checked
+                                ? "border-emerald-500 bg-emerald-500 text-white"
+                                : "border-ink-900/25 bg-white text-transparent hover:border-emerald-500"
+                            }`}
+                          >
+                            ✓
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void loadNote(item.noteId)}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <p
+                              className={`break-words text-[13px] ${
+                                item.checked ? "line-through text-ink-900/45" : "text-ink-900"
+                              }`}
+                            >
+                              {item.text}
+                            </p>
+                            <p className="mt-1 truncate text-[11px] text-ink-900/40">
+                              {item.noteTitle} · {item.lineIndex + 1}번째 줄
+                            </p>
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                </div>
+              )}
+            </div>
           ) : (
             <div className="space-y-2">
               {versions.length === 0 ? (
@@ -2768,6 +3489,75 @@ export function MemoWorkbench({
           <button type="button" className="float-right ml-4 text-[11px] font-semibold" onClick={() => setError(null)}>
             숨김
           </button>
+        </div>
+      ) : null}
+
+      {commandPaletteOpen ? (
+        <div
+          className="fixed inset-0 z-[90] bg-black/20 p-4 backdrop-blur-[1px]"
+          onMouseDown={() => setCommandPaletteOpen(false)}
+        >
+          <div
+            className="mx-auto mt-[10vh] w-full max-w-xl overflow-hidden rounded-2xl border border-ink-900/12 bg-white shadow-2xl"
+            onMouseDown={(ev) => ev.stopPropagation()}
+          >
+            <div className="border-b border-ink-900/10 p-3">
+              <input
+                ref={commandInputRef}
+                value={commandQuery}
+                onChange={(ev) => setCommandQuery(ev.target.value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Escape") {
+                    ev.preventDefault();
+                    setCommandPaletteOpen(false);
+                    return;
+                  }
+                  if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    const cmd = filteredAppCommands.find((x) => !x.disabled);
+                    if (!cmd) return;
+                    setCommandPaletteOpen(false);
+                    setCommandQuery("");
+                    cmd.run();
+                  }
+                }}
+                placeholder="명령 검색... 새 노트, 오늘 노트, 이미지, 그리기"
+                className="h-11 w-full rounded-xl border border-ink-900/10 bg-[#fafaf9] px-3 text-[15px] outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+              />
+            </div>
+            <div className="max-h-[50vh] overflow-y-auto p-2">
+              {filteredAppCommands.length === 0 ? (
+                <p className="px-3 py-6 text-center text-[13px] text-ink-900/45">일치하는 명령이 없습니다.</p>
+              ) : (
+                filteredAppCommands.map((cmd) => (
+                  <button
+                    key={cmd.id}
+                    type="button"
+                    disabled={cmd.disabled}
+                    className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => {
+                      setCommandPaletteOpen(false);
+                      setCommandQuery("");
+                      cmd.run();
+                    }}
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-[14px] font-semibold text-ink-900">{cmd.title}</span>
+                      <span className="block truncate text-[12px] text-ink-900/45">{cmd.description}</span>
+                    </span>
+                    {cmd.shortcut ? (
+                      <span className="shrink-0 rounded border border-ink-900/10 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-ink-900/45">
+                        {cmd.shortcut}
+                      </span>
+                    ) : null}
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="border-t border-ink-900/8 px-3 py-2 text-[11px] text-ink-900/40">
+              Enter 실행 · Esc 닫기 · Ctrl+K / Ctrl+P 열기
+            </div>
+          </div>
         </div>
       ) : null}
 

@@ -13,6 +13,8 @@ import {
   getRenderedOffset,
   headingLevelClass,
   parseAttachmentLine,
+  parseChecklistLine,
+  parseQuoteLine,
   renderMarkdownLineHtml,
   serializeAttachmentMarker,
 } from "./markdown";
@@ -358,6 +360,71 @@ export function applyInlineHighlight(text: HTMLElement, from: number, to: number
   }
 }
 
+// 활성(편집 중) 체크리스트 줄에서 `- [ ] ` / `- [x] ` 부분을 가리고 그 자리에
+// 클릭 가능한 체크박스를 보여주는 인라인 위젯. 본문 텍스트는 위젯 뒤에 그대로
+// 노출되어 편집 가능하다. 비활성 줄은 RenderedMarkdownLineWidget 이 줄 전체를
+// 그리므로 그쪽에서 같이 처리된다.
+export class ChecklistPrefixWidget extends WidgetType {
+  constructor(
+    readonly checked: boolean,
+    readonly stateFromAbs: number,
+  ) {
+    super();
+  }
+  eq(other: ChecklistPrefixWidget): boolean {
+    return this.checked === other.checked && this.stateFromAbs === other.stateFromAbs;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const wrap = document.createElement("span");
+    wrap.className = "memo-checklist-prefix";
+    wrap.contentEditable = "false";
+    wrap.setAttribute("aria-hidden", "false");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("role", "checkbox");
+    btn.setAttribute("aria-checked", this.checked ? "true" : "false");
+    btn.dataset.checked = this.checked ? "true" : "false";
+    btn.dataset.checklistInlineToggle = "1";
+    btn.className =
+      "memo-checklist-box mr-2 inline-grid h-4 w-4 shrink-0 place-items-center rounded border border-ink-900/25 bg-white align-text-top text-[11px] leading-none text-white data-[checked=true]:border-emerald-500 data-[checked=true]:bg-emerald-500";
+    btn.textContent = this.checked ? "✓" : "";
+    btn.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const next = this.checked ? " " : "x";
+      view.dispatch({
+        changes: { from: this.stateFromAbs, to: this.stateFromAbs + 1, insert: next },
+        userEvent: "input.checklist",
+      });
+      requestAnimationFrame(() => view.focus());
+    });
+    wrap.appendChild(btn);
+    return wrap;
+  }
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+// 활성(편집 중) 인용 줄에서 `> ` prefix 를 가린다. 인용임을 나타내는 시각
+// 요소는 .memo-quote-line 의 좌측 라인이 담당하므로, 원문 `>` 는 보일 필요가 없다.
+export class QuotePrefixWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = "memo-quote-prefix";
+    span.contentEditable = "false";
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+  ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 export class RenderedMarkdownLineWidget extends WidgetType {
   constructor(
     readonly rawLine: string,
@@ -393,6 +460,31 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     el.appendChild(text);
     // 첨부 placeholder 가 있으면 토큰을 사용해 인증된 미디어로 교체.
     hydrateAttachmentsIn(text, view, this.rawLine, this.lineFrom);
+    const checklist = parseChecklistLine(this.rawLine);
+    if (checklist) {
+      const toggle = text.querySelector<HTMLElement>("[data-checklist-toggle]");
+      toggle?.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+      });
+      toggle?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const stateFrom = this.lineFrom + checklist.stateOffset;
+        const next = checklist.checked ? " " : "x";
+        // 캐럿을 괄호 안(`[x|]`) 에 두면 그 자리에서 Enter 가 눌릴 때 줄이
+        // 괄호 사이에서 잘려 깨진다. 줄 끝으로 옮겨서 일반 편집과 똑같이
+        // 동작하게 한다.
+        const lineDoc = view.state.doc.lineAt(stateFrom);
+        view.dispatch({
+          changes: { from: stateFrom, to: stateFrom + 1, insert: next },
+          selection: { anchor: lineDoc.to },
+          scrollIntoView: true,
+          userEvent: "input.checklist",
+        });
+        requestAnimationFrame(() => view.focus());
+      });
+    }
     if (this.highlightTo > this.highlightFrom) {
       const renderedFrom = getRenderedOffset(this.rawLine, this.highlightFrom);
       const renderedTo = getRenderedOffset(this.rawLine, this.highlightTo);
@@ -527,12 +619,53 @@ function buildHybridDecorations(state: EditorView["state"]): DecorationSet {
     // 않게 항상 위젯으로 렌더한다.
     const isAttachment = parseAttachmentLine(line.text) !== null;
     if (i === activeLineNo && !isAttachment) {
+      // 체크리스트 줄은 활성 상태에서도 마크다운 prefix(`- [ ] ` / `- [x] `) 가
+      // raw 로 풀리지 않도록, 그 부분만 인라인 체크박스 위젯으로 가리고 본문은
+      // 그대로 편집 가능하게 둔다. 노션처럼 체크박스가 살아있는 토글로 동작.
+      const activeChecklist = parseChecklistLine(line.text);
+      if (activeChecklist) {
+        const prefixEnd = line.from + activeChecklist.textOffset;
+        markDecos.push(
+          Decoration.replace({
+            widget: new ChecklistPrefixWidget(
+              activeChecklist.checked,
+              line.from + activeChecklist.stateOffset,
+            ),
+          }).range(line.from, prefixEnd),
+        );
+        if (activeChecklist.checked && line.to > prefixEnd) {
+          markDecos.push(
+            Decoration.mark({ class: "memo-checklist-text-checked" }).range(prefixEnd, line.to),
+          );
+        }
+        if (hasRangeSelection) {
+          const overlapFrom = Math.max(prefixEnd, selFrom);
+          const overlapTo = Math.min(line.to, selTo);
+          if (overlapTo > overlapFrom) {
+            markDecos.push(
+              Decoration.mark({ class: "memo-selection" }).range(overlapFrom, overlapTo),
+            );
+          }
+        }
+        continue;
+      }
       const headingCls = headingLevelClass(line.text);
       if (headingCls) {
         lineDecos.push(Decoration.line({ class: headingCls }).range(line.from));
       }
+      // 인용 줄 (`> ...`) 은 액티브 상태에서도 인용 스타일 (좌측 라인 + 흐린 글씨)
+      // 을 유지하되, `> ` prefix 는 체크박스 prefix 처럼 숨긴다.
+      const activeQuote = parseQuoteLine(line.text);
+      if (activeQuote) {
+        lineDecos.push(Decoration.line({ class: "memo-quote-line" }).range(line.from));
+        const prefixEnd = line.from + activeQuote.prefixLen;
+        markDecos.push(
+          Decoration.replace({ widget: new QuotePrefixWidget() }).range(line.from, prefixEnd),
+        );
+      }
       if (hasRangeSelection) {
-        const overlapFrom = Math.max(line.from, selFrom);
+        const activeQuotePrefixEnd = activeQuote ? line.from + activeQuote.prefixLen : line.from;
+        const overlapFrom = Math.max(activeQuotePrefixEnd, selFrom);
         const overlapTo = Math.min(line.to, selTo);
         if (overlapTo > overlapFrom) {
           markDecos.push(
@@ -845,6 +978,35 @@ export const editorNavAndDeleteKeymap = Prec.high(
             return removeWholeAttachmentLine(view, prev);
           }
         }
+        // 체크박스 prefix(`- [ ] ` / `- [x] `) 는 한 단위로 삭제. 텍스트 시작점
+        // (또는 그 이전 어디에서든 hidden range 안) 에서 Backspace 를 누르면
+        // prefix 전체가 통째로 사라지고 일반 텍스트 줄로 돌아간다.
+        const checklist = parseChecklistLine(line.text);
+        if (checklist) {
+          const prefixEnd = line.from + checklist.textOffset;
+          if (sel.head > line.from && sel.head <= prefixEnd) {
+            view.dispatch({
+              changes: { from: line.from, to: prefixEnd, insert: "" },
+              selection: { anchor: line.from },
+              userEvent: "delete.checklist.prefix",
+            });
+            return true;
+          }
+        }
+        // 인용 prefix(`> `) 도 화면에서는 숨겨져 있으므로, 첫 글자 앞에서
+        // Backspace 를 누르면 prefix 전체를 지워 일반 문단으로 돌린다.
+        const quote = parseQuoteLine(line.text);
+        if (quote) {
+          const prefixEnd = line.from + quote.prefixLen;
+          if (sel.head > line.from && sel.head <= prefixEnd) {
+            view.dispatch({
+              changes: { from: line.from, to: prefixEnd, insert: "" },
+              selection: { anchor: line.from },
+              userEvent: "delete.quote.prefix",
+            });
+            return true;
+          }
+        }
         return false;
       },
     },
@@ -864,7 +1026,113 @@ export const editorNavAndDeleteKeymap = Prec.high(
             return removeWholeAttachmentLine(view, next);
           }
         }
+        const quote = parseQuoteLine(line.text);
+        if (quote && sel.head === line.from) {
+          const prefixEnd = line.from + quote.prefixLen;
+          view.dispatch({
+            changes: { from: line.from, to: prefixEnd, insert: "" },
+            selection: { anchor: line.from },
+            userEvent: "delete.quote.prefix",
+          });
+          return true;
+        }
         return false;
+      },
+    },
+    {
+      // 체크리스트 줄에서 Enter:
+      //   - 텍스트가 있는 항목 (- [ ] foo) → 다음 줄에 빈 unchecked 항목 추가.
+      //   - 텍스트가 빈 항목 (- [ ]  또는 - [x]  ) → 마커를 지우고 빈 줄로.
+      // markdown() 확장의 자동 처리가 우리 의도와 어긋나는(특히 체크박스를
+      // 클릭한 직후 캐럿이 어색한 위치에 있을 때 줄을 통째로 깨먹는) 케이스를
+      // 막기 위해 우리가 먼저 잡는다.
+      key: "Enter",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+
+        // 인용 줄에서 Enter:
+        //   - 본문이 빈 인용 (`> ` 만 있음) → prefix 지우고 빈 줄로.
+        //   - 본문이 있는 인용 → 다음 줄에 일반 문단 (인용 prefix 안 이어줌).
+        const quote = parseQuoteLine(line.text);
+        if (quote) {
+          if (!quote.text.trim()) {
+            view.dispatch({
+              changes: { from: line.from, to: line.to, insert: "" },
+              selection: { anchor: line.from },
+              scrollIntoView: true,
+              userEvent: "input.quote",
+            });
+            return true;
+          }
+          view.dispatch({
+            changes: { from: sel.head, to: sel.head, insert: "\n" },
+            selection: { anchor: sel.head + 1 },
+            scrollIntoView: true,
+            userEvent: "input.quote",
+          });
+          return true;
+        }
+
+        const checklist = parseChecklistLine(line.text);
+        if (!checklist) return false;
+        if (!checklist.text.trim()) {
+          view.dispatch({
+            changes: { from: line.from, to: line.to, insert: "" },
+            selection: { anchor: line.from },
+            scrollIntoView: true,
+            userEvent: "input.checklist",
+          });
+          return true;
+        }
+        const indent = (line.text.match(/^\s*/) ?? [""])[0];
+        const insert = `\n${indent}- [ ] `;
+        view.dispatch({
+          changes: { from: sel.head, to: sel.head, insert },
+          selection: { anchor: sel.head + insert.length },
+          scrollIntoView: true,
+          userEvent: "input.checklist",
+        });
+        return true;
+      },
+    },
+  ]),
+);
+
+// markdown 확장의 기본 blockquote 이어쓰기보다 반드시 먼저 실행되어야 한다.
+// 일반적인 markdown 에디터는 `> foo` 에서 Enter 시 다음 줄도 `> ` 로 이어주지만,
+// 이 앱에서는 인용을 한 줄 단위로 보고 Enter 이후는 일반 문단으로 돌아간다.
+export const editorQuoteEnterKeymap = Prec.highest(
+  keymap.of([
+    {
+      key: "Enter",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        const quote = parseQuoteLine(line.text);
+        if (!quote) return false;
+
+        if (!quote.text.trim()) {
+          view.dispatch({
+            changes: { from: line.from, to: line.to, insert: "" },
+            selection: { anchor: line.from },
+            scrollIntoView: true,
+            userEvent: "input.quote",
+          });
+          return true;
+        }
+
+        view.dispatch({
+          changes: { from: sel.head, to: sel.head, insert: "\n" },
+          selection: { anchor: sel.head + 1 },
+          scrollIntoView: true,
+          userEvent: "input.quote",
+        });
+        return true;
       },
     },
   ]),
@@ -879,6 +1147,40 @@ export const editorUndoRedoKeymap = Prec.highest(
     { key: "Mod-y", run: redo },
     // macOS 사용자가 익숙한 redo 도 같이 지원. Windows/Linux 에서는 무해하다.
     { key: "Mod-Shift-z", run: redo },
+  ]),
+);
+
+// 노션처럼 `[]` 뒤에서 Space 를 누르면 체크박스로 변환한다. `[` 입력 자동완성으로
+// `[]` 가 만들어진 순간에는 아직 사용자의 의도가 확실하지 않으므로 건드리지 않는다.
+// 입력 후 transactionFilter 로 보정하면 새 문서 좌표/기존 문서 좌표가 섞일 수 있어,
+// Space 키를 입력하기 전에 현재 줄을 보고 직접 치환한다.
+export const editorChecklistAutoTrigger = Prec.high(
+  keymap.of([
+    {
+      key: "Space",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        const m = line.text.match(/^(\s*)\[\]$/);
+        if (!m) return false;
+
+        const indent = m[1] ?? "";
+        const cursorInEmptyBox = sel.head === line.from + indent.length + 1;
+        const cursorAfterEmptyBox = sel.head === line.to;
+        if (!cursorInEmptyBox && !cursorAfterEmptyBox) return false;
+
+        const prefix = `${indent}- [ ] `;
+        view.dispatch({
+          changes: { from: line.from, to: line.to, insert: prefix },
+          selection: { anchor: line.from + prefix.length },
+          scrollIntoView: true,
+          userEvent: "input.checklist.create",
+        });
+        return true;
+      },
+    },
   ]),
 );
 
@@ -920,6 +1222,19 @@ export const cmEditorVisualTheme = EditorView.theme({
     fontSize: "1.125rem",
     fontWeight: "600",
     lineHeight: "1.4",
+  },
+  // 인용 줄: 좌측 vertical bar + 인용 본문 톤. 액티브 라인에서도 동일하게 보이도록.
+  // padding-left 는 .cm-line 의 0 !important 때문에 !important 로 덮어쓴다.
+  ".cm-line.memo-quote-line": {
+    borderLeft: "3px solid rgba(15,17,28,0.2)",
+    paddingLeft: "0.6rem !important",
+    color: "rgba(15,17,28,0.78)",
+    fontStyle: "italic",
+  },
+  ".memo-quote-prefix": {
+    display: "inline-block",
+    width: "0",
+    overflow: "hidden",
   },
   ".cm-header, .cm-formatting-header": {
     textDecoration: "none !important",
@@ -963,6 +1278,18 @@ export const cmEditorVisualTheme = EditorView.theme({
   ".memo-selection": {
     backgroundColor: "#cfd0e8",
     borderRadius: "2px",
+  },
+  // 활성 체크리스트 줄에서 본문이 'checked' 상태일 때 본문에만 취소선/희미한
+  // 색을 입힌다. prefix 위젯에는 닿지 않게 mark 데코레이션 한정으로 적용.
+  ".memo-checklist-text-checked": {
+    textDecoration: "line-through",
+    color: "rgba(15, 23, 42, 0.45)",
+  },
+  // prefix 위젯 자체는 줄과 같은 baseline 으로 정렬되어야 텍스트와 함께 자연스럽게
+  // 보인다. user-select 를 막아서 더블클릭/드래그 선택이 본문 텍스트에서 시작/끝
+  // 나도록 한다.
+  ".memo-checklist-prefix": {
+    userSelect: "none",
   },
   // 이미지 블록 툴바/리사이즈 핸들은 기본 숨김. 이미지를 클릭하면 outer 가
   // .is-selected 가 되어 노출. 이미지 외 다른 곳을 클릭하면 자동 해제.

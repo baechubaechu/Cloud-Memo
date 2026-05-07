@@ -123,10 +123,59 @@ export function renderInlineMarkdown(s: string): string {
   return out;
 }
 
+export type ChecklistLine = {
+  checked: boolean;
+  text: string;
+  /** `[ ]` / `[x]` 내부 상태 문자의 raw offset. */
+  stateOffset: number;
+  /** 리스트/체크박스 prefix 이후 본문 시작 raw offset. */
+  textOffset: number;
+};
+
+export function parseChecklistLine(line: string): ChecklistLine | null {
+  const m = line.match(/^(\s*[-*]\s+\[)( |x|X)(\]\s+)(.*)$/);
+  if (!m) return null;
+  return {
+    checked: m[2].toLowerCase() === "x",
+    text: m[4],
+    stateOffset: m[1].length,
+    textOffset: m[1].length + m[2].length + m[3].length,
+  };
+}
+
+export type QuoteLine = {
+  /** 줄 시작의 들여쓰기. */
+  indent: string;
+  /** `> ` 까지 합친 prefix 길이 (raw line 기준). */
+  prefixLen: number;
+  /** prefix 다음 본문. */
+  text: string;
+};
+
+/** `> 본문` 또는 `   > 본문` 형태의 인용 줄을 인식한다. `>` 다음 공백 1개 이상 필수. */
+export function parseQuoteLine(line: string): QuoteLine | null {
+  const m = line.match(/^(\s*)>(\s+)(.*)$/);
+  if (!m) return null;
+  const indent = m[1] ?? "";
+  const space = m[2] ?? " ";
+  return {
+    indent,
+    prefixLen: indent.length + 1 + space.length,
+    text: m[3] ?? "",
+  };
+}
+
 export function renderMarkdownLineHtml(line: string): string {
   if (!line.trim()) return "&nbsp;";
   const att = parseAttachmentLine(line);
   if (att) return renderAttachmentPlaceholderHtml(att);
+  const checklist = parseChecklistLine(line);
+  if (checklist) {
+    const checkedAttr = checklist.checked ? ' aria-checked="true" data-checked="true"' : ' aria-checked="false"';
+    const mark = checklist.checked ? "✓" : "";
+    const textCls = checklist.checked ? "line-through text-ink-900/45" : "text-ink-900";
+    return `<span class="memo-checklist-line inline-flex items-start gap-2"><button type="button" role="checkbox"${checkedAttr} class="memo-checklist-box mt-[3px] grid h-4 w-4 shrink-0 place-items-center rounded border border-ink-900/25 bg-white text-[11px] leading-none text-white data-[checked=true]:border-emerald-500 data-[checked=true]:bg-emerald-500" data-checklist-toggle="1">${mark}</button><span class="${textCls}">${renderInlineMarkdown(checklist.text)}</span></span>`;
+  }
   const heading = line.match(/^(#{1,6})\s+(.+)$/);
   if (heading) {
     const level = Math.min(6, heading[1].length);
@@ -162,6 +211,8 @@ export function headingLevelClass(line: string): string | null {
 export function getRenderedOffset(rawLine: string, rawOffset: number): number {
   const heading = rawLine.match(/^(#{1,6})\s+/);
   if (heading) return Math.max(0, rawOffset - heading[0].length);
+  const checklist = parseChecklistLine(rawLine);
+  if (checklist) return Math.max(0, rawOffset - checklist.textOffset);
   if (rawLine.startsWith("> ")) return Math.max(0, rawOffset - 2);
   return rawOffset;
 }
