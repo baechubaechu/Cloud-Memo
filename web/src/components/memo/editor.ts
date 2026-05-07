@@ -1,7 +1,12 @@
 import { StateField, type Range } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 
-import { getRenderedOffset, headingLevelClass, renderMarkdownLineHtml } from "./markdown";
+import {
+  getRenderedOffset,
+  headingLevelClass,
+  parseAttachmentLine,
+  renderMarkdownLineHtml,
+} from "./markdown";
 
 // 첨부 마커를 인증된 미디어로 hydrate 하기 위한 모듈 전역 상태.
 // Workbench 가 마운트/토큰 변화 시점에 setEditorAuthContext 로 주입한다.
@@ -10,6 +15,16 @@ let __authCtx: EditorAuthContext | null = null;
 
 export function setEditorAuthContext(ctx: EditorAuthContext | null): void {
   __authCtx = ctx;
+}
+
+// 미디어 paste / drop 핸들러가 호출할 "현재 활성 노트에 파일을 업로드해서 마커를
+// 본문에 삽입" 콜백. Workbench 가 마운트/리렌더 시점에 setEditorInsertFile 로
+// 최신 클로저를 주입한다. 모듈 전역으로 둬서 CodeMirror 확장이 React 의 리렌더
+// 사이클과 무관하게 항상 같은 함수 핸들을 통해 최신 동작을 호출할 수 있게 한다.
+type InsertFileFn = (file: File) => void;
+let __insertFile: InsertFileFn | null = null;
+export function setEditorInsertFile(fn: InsertFileFn | null): void {
+  __insertFile = fn;
 }
 
 const __blobCache = new Map<string, string>();
@@ -143,6 +158,8 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     el.style.userSelect = "none";
     const lineNum = view.state.doc.lineAt(this.lineFrom).number;
     el.setAttribute("data-cm-widget-line", String(lineNum));
+    const isAttachment = parseAttachmentLine(this.rawLine) !== null;
+    if (isAttachment) el.setAttribute("data-cm-widget-attachment", "1");
     const text = document.createElement("span");
     text.className = "inline";
     text.innerHTML = renderMarkdownLineHtml(this.rawLine);
@@ -181,6 +198,17 @@ export class RenderedMarkdownLineWidget extends WidgetType {
       if (ev.detail >= 2) {
         view.dispatch({
           selection: { anchor: lineFrom, head: lineTo },
+          scrollIntoView: true,
+        });
+        view.focus();
+        return;
+      }
+      // 첨부 줄(이미지/오디오/파일)은 캐럿을 줄 끝으로만 보낸다. 렌더된 미디어
+      // 안쪽에서 글자 단위로 캐럿을 잡으면 의도치 않게 마커 텍스트를 편집해서
+      // 다음 렌더 사이클에 raw 마크다운으로 돌아가는 문제가 생긴다.
+      if (isAttachment) {
+        view.dispatch({
+          selection: { anchor: lineTo },
           scrollIntoView: true,
         });
         view.focus();
@@ -235,7 +263,10 @@ function buildHybridDecorations(state: EditorView["state"]): DecorationSet {
   const blockDecos: Range<Decoration>[] = [];
   for (let i = 1; i <= state.doc.lines; i += 1) {
     const line = state.doc.line(i);
-    if (i === activeLineNo) {
+    // 첨부 줄(이미지/오디오/파일)은 활성 줄이어도 raw 마크다운으로 돌아가지
+    // 않게 항상 위젯으로 렌더한다.
+    const isAttachment = parseAttachmentLine(line.text) !== null;
+    if (i === activeLineNo && !isAttachment) {
       const headingCls = headingLevelClass(line.text);
       if (headingCls) {
         lineDecos.push(Decoration.line({ class: headingCls }).range(line.from));
@@ -280,6 +311,67 @@ export const hybridMarkdownField = StateField.define<DecorationSet>({
     return deco;
   },
   provide: (f) => EditorView.decorations.from(f),
+});
+
+// ---------- 미디어 paste / drop / dragover 핸들러 ----------
+// React useEffect 로 view.dom 에 직접 listener 를 다는 방식은 CodeMirror 내부의
+// paste/drop 기본 동작이 먼저 실행되면서 이벤트가 살아있어도 텍스트로만 처리되어
+// 파일이 무시되는 일이 잦다. 그래서 EditorView.domEventHandlers 로 확장에 묶어
+// 두면 CodeMirror 의 default 보다 먼저 실행되고, true 를 반환해 default 를 막을
+// 수 있다.
+function collectFilesFromTransfer(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const out: File[] = [];
+  if (dt.items && dt.items.length > 0) {
+    for (let i = 0; i < dt.items.length; i += 1) {
+      const it = dt.items[i];
+      if (it.kind === "file") {
+        const f = it.getAsFile();
+        if (f) out.push(f);
+      }
+    }
+  }
+  if (out.length === 0 && dt.files && dt.files.length > 0) {
+    for (let i = 0; i < dt.files.length; i += 1) out.push(dt.files[i]);
+  }
+  return out;
+}
+
+export const editorMediaInputHandlers = EditorView.domEventHandlers({
+  paste(ev) {
+    const files = collectFilesFromTransfer(ev.clipboardData);
+    if (files.length === 0) return false; // 텍스트만 있으면 CodeMirror 기본 처리.
+    ev.preventDefault();
+    ev.stopPropagation();
+    const fn = __insertFile;
+    if (!fn) return true;
+    for (const f of files) fn(f);
+    return true;
+  },
+  dragover(ev) {
+    if (ev.dataTransfer && Array.from(ev.dataTransfer.types).includes("Files")) {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "copy";
+      return true;
+    }
+    return false;
+  },
+  drop(ev, view) {
+    const files = collectFilesFromTransfer(ev.dataTransfer);
+    if (files.length === 0) return false;
+    ev.preventDefault();
+    ev.stopPropagation();
+    // 드롭 좌표를 캐럿 위치로 옮긴 뒤 그 자리에 마커가 들어가도록 한다.
+    const pos = view.posAtCoords({ x: ev.clientX, y: ev.clientY });
+    if (typeof pos === "number") {
+      view.dispatch({ selection: { anchor: pos } });
+      view.focus();
+    }
+    const fn = __insertFile;
+    if (!fn) return true;
+    for (const f of files) fn(f);
+    return true;
+  },
 });
 
 // 우측 여백 더블클릭 → 줄 전체 선택. 위젯/cm-line 양쪽에서 모두 잡히도록
