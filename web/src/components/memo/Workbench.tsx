@@ -37,6 +37,7 @@ import {
   editorCursorTracker,
   editorMediaInputHandlers,
   editorMouseHandlers,
+  editorNavAndDeleteKeymap,
   getLastDocCursor,
   hybridMarkdownField,
   isLastDocCursorExplicit,
@@ -2423,6 +2424,7 @@ export function MemoWorkbench({
                 editorMediaInputHandlers,
                 editorCursorTracker,
                 editorCursorBackupSync,
+                editorNavAndDeleteKeymap,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {

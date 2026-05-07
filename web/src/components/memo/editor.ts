@@ -1,5 +1,11 @@
-import { StateField, type Range } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
+import { Prec, StateField, type Range } from "@codemirror/state";
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  WidgetType,
+  keymap,
+} from "@codemirror/view";
 
 import {
   getRenderedOffset,
@@ -479,7 +485,32 @@ export const editorMouseHandlers = EditorView.domEventHandlers({
         isAtRightMargin = pos === ln.to;
       }
     }
-    if (lineNumber < 1) return false;
+    if (lineNumber < 1) {
+      // 본문 안 어디에도 cm-line / widget 매핑이 안 되는 위치(=cm-content 의
+      // 빈 아래쪽 여백)에 클릭한 경우. 본문 마지막 줄 끝으로 캐럿을 옮긴다.
+      // - 위젯 블록 데코레이션 때문에 CodeMirror 기본 mousedown 이 빈 여백을
+      //   본문 끝으로 매핑하지 못하는 케이스가 있다.
+      const contentEl = view.contentDOM;
+      const cRect = contentEl.getBoundingClientRect();
+      const insideContent =
+        ev.clientX >= cRect.left &&
+        ev.clientX <= cRect.right &&
+        ev.clientY >= cRect.top &&
+        ev.clientY <= cRect.bottom + 200;
+      const lastLine = view.state.doc.line(view.state.doc.lines);
+      const lastCoords = view.coordsAtPos(lastLine.to);
+      const belowText = lastCoords ? ev.clientY > lastCoords.bottom : insideContent;
+      if (insideContent && belowText) {
+        ev.preventDefault();
+        view.dispatch({
+          selection: { anchor: view.state.doc.length },
+          scrollIntoView: true,
+        });
+        view.focus();
+        return true;
+      }
+      return false;
+    }
     const now = Date.now();
     const prev = __lastEditorMouseDown;
     __lastEditorMouseDown = { line: lineNumber, time: now, margin: isAtRightMargin };
@@ -503,6 +534,150 @@ export const editorMouseHandlers = EditorView.domEventHandlers({
     return false;
   },
 });
+
+// ---------- 위/아래 화살표 + 첨부 줄 삭제 키맵 ----------
+//
+// 1) ArrowUp / ArrowDown
+//    비활성 줄을 block widget(Decoration.replace block:true) 으로 통째로 대체
+//    하기 때문에, CodeMirror 기본 cursorUp/Down (시각 좌표 기반) 이 위젯 경계
+//    를 못 넘어 doc 의 맨 처음/끝으로 점프하는 현상이 있다. doc-line 단위로
+//    한 줄씩 이동하고 컬럼은 가능한 한 보존한다.
+//
+// 2) Backspace / Delete
+//    "이미지는 업로드 한 순간부터 그냥 이미지". 첨부 줄에서 한 글자만 지우면
+//    `![...](attachment://abc)` 패턴이 깨져 raw 마크다운으로 다시 보이는 게
+//    사용자 직관에 어긋나므로, 첨부 줄에 닿는 삭제는 아예 그 줄 통째로 한 번에
+//    제거한다.
+
+function isAttachmentLineText(text: string): boolean {
+  return parseAttachmentLine(text) !== null;
+}
+
+function removeWholeAttachmentLine(
+  view: EditorView,
+  line: { from: number; to: number },
+): boolean {
+  const docLen = view.state.doc.length;
+  let from: number;
+  let to: number;
+  if (line.from > 0) {
+    // 앞에 \n 이 있으면 앞 \n 까지 같이 지운다 (앞 줄 끝에 캐럿이 남게).
+    from = line.from - 1;
+    to = line.to;
+  } else if (line.to < docLen) {
+    // 첫 줄이라 앞에 \n 이 없을 땐 뒤 \n 까지 지운다.
+    from = 0;
+    to = line.to + 1;
+  } else {
+    // 첫 줄이자 마지막 줄(=문서 전체).
+    from = 0;
+    to = docLen;
+  }
+  view.dispatch({
+    changes: { from, to, insert: "" },
+    selection: { anchor: from },
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+export const editorNavAndDeleteKeymap = Prec.high(
+  keymap.of([
+    {
+      key: "ArrowUp",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        if (line.number <= 1) {
+          // 이미 첫 줄: 줄 시작으로만 보낸다 (default 면 doc 맨 위로 갈 수 있어).
+          if (sel.head !== line.from) {
+            view.dispatch({
+              selection: { anchor: line.from },
+              scrollIntoView: true,
+            });
+            return true;
+          }
+          return true; // 더 위로 안 감 (jump 방지).
+        }
+        const prev = state.doc.line(line.number - 1);
+        const col = sel.head - line.from;
+        const target = Math.min(prev.from + col, prev.to);
+        view.dispatch({
+          selection: { anchor: target },
+          scrollIntoView: true,
+        });
+        return true;
+      },
+    },
+    {
+      key: "ArrowDown",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        if (line.number >= state.doc.lines) {
+          if (sel.head !== line.to) {
+            view.dispatch({
+              selection: { anchor: line.to },
+              scrollIntoView: true,
+            });
+            return true;
+          }
+          return true;
+        }
+        const next = state.doc.line(line.number + 1);
+        const col = sel.head - line.from;
+        const target = Math.min(next.from + col, next.to);
+        view.dispatch({
+          selection: { anchor: target },
+          scrollIntoView: true,
+        });
+        return true;
+      },
+    },
+    {
+      key: "Backspace",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        if (isAttachmentLineText(line.text)) {
+          return removeWholeAttachmentLine(view, line);
+        }
+        if (sel.head === line.from && line.number > 1) {
+          const prev = state.doc.line(line.number - 1);
+          if (isAttachmentLineText(prev.text)) {
+            return removeWholeAttachmentLine(view, prev);
+          }
+        }
+        return false;
+      },
+    },
+    {
+      key: "Delete",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        if (isAttachmentLineText(line.text)) {
+          return removeWholeAttachmentLine(view, line);
+        }
+        if (sel.head === line.to && line.number < state.doc.lines) {
+          const next = state.doc.line(line.number + 1);
+          if (isAttachmentLineText(next.text)) {
+            return removeWholeAttachmentLine(view, next);
+          }
+        }
+        return false;
+      },
+    },
+  ]),
+);
 
 export const cmEditorVisualTheme = EditorView.theme({
   "&.cm-editor": {
