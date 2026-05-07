@@ -40,6 +40,18 @@ export type NoteListItem = {
   tags: Tag[];
 };
 
+export type OverlayStrokeTool = "pen" | "highlighter";
+
+export type OverlayStroke = {
+  id: string;
+  tool: OverlayStrokeTool;
+  color: string;
+  width: number;
+  opacity?: number;
+  captureWidth: number;
+  points: [number, number][];
+};
+
 export type NoteDetail = {
   id: string;
   title: string;
@@ -53,6 +65,7 @@ export type NoteDetail = {
   deleted_at?: string | null;
   tags: Tag[];
   attachments: Attachment[];
+  overlay_strokes: OverlayStroke[];
 };
 
 export type NoteVersion = {
@@ -235,6 +248,7 @@ async function patchNote(
     is_favorite: boolean;
     is_archived: boolean;
     force_snapshot: boolean;
+    overlay_strokes: OverlayStroke[];
   }>,
 ) {
   return fetchJson(

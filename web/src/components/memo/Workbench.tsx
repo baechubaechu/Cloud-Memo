@@ -7,14 +7,17 @@ import { languages } from "@codemirror/language-data";
 import { EditorView } from "@codemirror/view";
 import {
   IconArchive,
+  IconBrush,
   IconChevronDown,
   IconChevronRight,
   IconClock,
+  IconEraser,
   IconFile,
   IconFilePlus,
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconHighlighter,
   IconImage,
   IconList,
   IconLogOut,
@@ -22,12 +25,14 @@ import {
   IconMusic,
   IconPaperclip,
   IconPlus,
+  IconRedo,
   IconSave,
   IconSearch,
   IconSidebarToggle,
   IconStar,
   IconStop,
   IconTrash,
+  IconUndo,
   IconX,
 } from "./Icons";
 import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
@@ -73,10 +78,16 @@ import type {
   NoteDetail,
   NoteListItem,
   NoteVersion,
+  OverlayStroke,
   StorageUsage,
   Tag,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
+import {
+  OverlayDrawingLayer,
+  type OverlayDrawingLayerHandle,
+  type OverlayDrawingTool,
+} from "./OverlayDrawingLayer";
 
 type Panel = "nav" | "list" | "editor";
 
@@ -85,6 +96,15 @@ type ListMode = "active" | "favorite" | "archive";
 // (REASON_LABEL, formatBytes, formatDateTime, compareName, DND 상수, dndHasMime 은 ./utils 로 이동)
 // (escapeHtml 등 마크다운 렌더링은 ./markdown 으로 이동)
 // (CodeMirror 위젯/상태/테마/이벤트 핸들러는 ./editor 로 이동)
+
+/** 그림 레이어 stroke 배열이 변했는지 가볍게 비교하기 위한 시그니처. */
+function overlaySignature(strokes: OverlayStroke[]): string {
+  if (!strokes || strokes.length === 0) return "0:";
+  const last = strokes[strokes.length - 1];
+  // 길이 + 마지막 stroke id + 마지막 점 개수만 보면 일반 편집에서 충돌은 없다.
+  // (서버 응답이 들어와도 같은 길이 + 같은 last id 면 동일하다고 본다.)
+  return `${strokes.length}:${last?.id ?? ""}:${last?.points?.length ?? 0}`;
+}
 
 export function MemoWorkbench({
   token,
@@ -177,7 +197,20 @@ export function MemoWorkbench({
   const pendingFocusNewNoteRef = useRef<string | null>(null);
 
   const saveTimerRef = useRef<number | null>(null);
-  const lastSentRef = useRef<{ title: string; content: string }>({ title: "", content: "" });
+  const lastSentRef = useRef<{ title: string; content: string; overlayKey: string }>({
+    title: "",
+    content: "",
+    overlayKey: "",
+  });
+  // 본문 위 자유 그림 레이어 상태. activeNote.overlay_strokes 와 양방향 동기.
+  const [overlayStrokes, setOverlayStrokes] = useState<OverlayStroke[]>([]);
+  const [drawingMode, setDrawingMode] = useState(false);
+  const [drawingTool, setDrawingTool] = useState<OverlayDrawingTool>("pen");
+  const [drawingColor, setDrawingColor] = useState("#1f2937");
+  const [drawingWidth, setDrawingWidth] = useState(2.5);
+  const overlayHandleRef = useRef<OverlayDrawingLayerHandle | null>(null);
+  // 그림 레이어 자동 저장 타이머 (본문/제목과 별개의 디바운스)
+  const overlayTimerRef = useRef<number | null>(null);
   // CodeMirror EditorView — onCreateEditor 에서 채워짐. 첨부 마커 삽입에 사용.
   const editorViewRef = useRef<EditorView | null>(null);
   // 음성 녹음 상태
@@ -393,7 +426,15 @@ export function MemoWorkbench({
         setActiveNote(note);
         setTitle(note.title);
         setContent(note.content);
-        lastSentRef.current = { title: note.title, content: note.content };
+        const incomingOverlay = Array.isArray(note.overlay_strokes) ? note.overlay_strokes : [];
+        setOverlayStrokes(incomingOverlay);
+        // 다른 노트로 옮기면 그리기 모드는 해제 (실수로 새 노트에 그리는 것 방지).
+        setDrawingMode(false);
+        lastSentRef.current = {
+          title: note.title,
+          content: note.content,
+          overlayKey: overlaySignature(incomingOverlay),
+        };
         setSaveState("saved");
         const vers = await api.listVersions(token, id);
         setVersions(vers);
@@ -422,7 +463,11 @@ export function MemoWorkbench({
           force_snapshot: !!forceSnapshot,
         });
         setActiveNote(updated);
-        lastSentRef.current = { title, content };
+        lastSentRef.current = {
+          title,
+          content,
+          overlayKey: overlaySignature(updated.overlay_strokes ?? []),
+        };
         setSaveState("saved");
         void reloadNotes();
         void refreshUsage();
@@ -435,6 +480,38 @@ export function MemoWorkbench({
     },
     [activeNote, activeNoteId, content, handleApiError, refreshUsage, reloadNotes, title, token],
   );
+
+  // 그림 레이어 stroke 가 바뀌면 디바운스 후 서버로 패치한다. 본문 자동 저장과
+  // 분리해서 텍스트 편집과 그림이 서로의 디바운스를 깨지 않게 한다.
+  useEffect(() => {
+    if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
+    const sig = overlaySignature(overlayStrokes);
+    if (sig === lastSentRef.current.overlayKey) return;
+    if (overlayTimerRef.current) window.clearTimeout(overlayTimerRef.current);
+    overlayTimerRef.current = window.setTimeout(async () => {
+      overlayTimerRef.current = null;
+      try {
+        const updated = await api.patchNote(token, activeNoteId, {
+          overlay_strokes: overlayStrokes,
+        });
+        lastSentRef.current = {
+          ...lastSentRef.current,
+          overlayKey: overlaySignature(updated.overlay_strokes ?? []),
+        };
+        // overlay_strokes 만 갱신된 응답으로 activeNote 의 다른 필드를 덮어쓰면
+        // 사용자가 그동안 입력한 title/content 가 사라질 수 있다. 메타만 갱신.
+        setActiveNote((prev) => (prev ? { ...prev, overlay_strokes: updated.overlay_strokes } : prev));
+      } catch (e) {
+        handleApiError(e);
+      }
+    }, 700);
+    return () => {
+      if (overlayTimerRef.current) {
+        window.clearTimeout(overlayTimerRef.current);
+        overlayTimerRef.current = null;
+      }
+    };
+  }, [overlayStrokes, activeNoteId, activeNote, token, handleApiError]);
 
   const scheduleAutosave = useCallback(() => {
     if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
@@ -2344,7 +2421,124 @@ export function MemoWorkbench({
         </div>
 
         {/* 본문 */}
-        <main className="scrollbar-subtle flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10">
+        <main className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10">
+          {/* 그리기 툴바 — 본문 상단 sticky. 그리기 모드 on/off 토글. */}
+          <div className="sticky top-0 z-30 -mx-6 -mt-6 mb-3 flex items-center gap-1 border-b border-ink-900/10 bg-[#fafaf9]/95 px-6 py-2 backdrop-blur md:-mx-10 md:px-10">
+            <button
+              type="button"
+              onClick={() => setDrawingMode((v) => !v)}
+              title={drawingMode ? "그리기 끄기" : "본문 위에 자유 그리기"}
+              aria-pressed={drawingMode}
+              className={`grid h-7 w-7 place-items-center rounded ${
+                drawingMode ? "bg-indigo-500 text-white" : "text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+              }`}
+            >
+              <IconBrush size={15} />
+            </button>
+            {drawingMode && (
+              <>
+                <span className="mx-1 h-4 w-px bg-ink-900/15" />
+                <button
+                  type="button"
+                  onClick={() => setDrawingTool("pen")}
+                  title="펜"
+                  aria-pressed={drawingTool === "pen"}
+                  className={`grid h-7 w-7 place-items-center rounded ${
+                    drawingTool === "pen" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                  }`}
+                >
+                  <IconBrush size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDrawingTool("highlighter")}
+                  title="형광펜"
+                  aria-pressed={drawingTool === "highlighter"}
+                  className={`grid h-7 w-7 place-items-center rounded ${
+                    drawingTool === "highlighter" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                  }`}
+                >
+                  <IconHighlighter size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDrawingTool("eraser")}
+                  title="지우개(stroke 단위)"
+                  aria-pressed={drawingTool === "eraser"}
+                  className={`grid h-7 w-7 place-items-center rounded ${
+                    drawingTool === "eraser" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
+                  }`}
+                >
+                  <IconEraser size={15} />
+                </button>
+                <span className="mx-1 h-4 w-px bg-ink-900/15" />
+                {/* 색 swatch */}
+                {["#1f2937", "#dc2626", "#2563eb", "#16a34a", "#f59e0b"].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setDrawingColor(c)}
+                    title={c}
+                    className={`h-5 w-5 rounded-full border ${
+                      drawingColor === c ? "border-ink-900 ring-2 ring-indigo-300" : "border-ink-900/20"
+                    }`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+                <span className="mx-1 h-4 w-px bg-ink-900/15" />
+                <input
+                  type="range"
+                  min={1}
+                  max={20}
+                  step={0.5}
+                  value={drawingWidth}
+                  onChange={(ev) => setDrawingWidth(Number(ev.target.value))}
+                  className="h-5 w-24"
+                  title={`굵기 ${drawingWidth}px`}
+                />
+                <span className="text-[11px] tabular-nums text-ink-900/55">{drawingWidth.toFixed(1)}</span>
+                <span className="mx-1 h-4 w-px bg-ink-900/15" />
+                <button
+                  type="button"
+                  onClick={() => overlayHandleRef.current?.undo()}
+                  title="되돌리기"
+                  className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+                >
+                  <IconUndo size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => overlayHandleRef.current?.redo()}
+                  title="다시 실행"
+                  className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
+                >
+                  <IconRedo size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (overlayStrokes.length === 0) return;
+                    const ok = await askConfirm({
+                      title: "그림 전체 삭제",
+                      message: "이 노트의 그림 레이어를 모두 지우시겠어요? 이 작업은 되돌리기로만 복구할 수 있어요.",
+                      confirmLabel: "전부 지우기",
+                    });
+                    if (!ok) return;
+                    overlayHandleRef.current?.clear();
+                  }}
+                  title="전부 지우기"
+                  className="ml-1 rounded px-1.5 text-[11px] text-ink-900/55 hover:bg-black/5 hover:text-ink-900"
+                >
+                  전부 지우기
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* 본문 컨텐츠 + 그림 레이어를 같은 positioning context 에 둔다.
+              그래야 absolute layer 가 본문과 함께 스크롤되고, 본문 폭에 정확히
+              겹친다. */}
+          <div className="relative">
           <input
             ref={titleInputRef}
             className="mx-auto block w-full max-w-3xl border-0 bg-transparent px-0 py-2 text-3xl font-semibold tracking-tight text-ink-900 outline-none placeholder:text-ink-900/25 focus:ring-0"
@@ -2437,6 +2631,18 @@ export function MemoWorkbench({
               className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
             />
           </section>
+          {/* 본문 위에 떠 있는 자유 그림 레이어. drawingMode 가 false 면 입력
+              이 통과돼서 텍스트 편집에 영향 없음. */}
+          <OverlayDrawingLayer
+            ref={overlayHandleRef}
+            enabled={drawingMode}
+            tool={drawingTool}
+            color={drawingColor}
+            width={drawingWidth}
+            strokes={overlayStrokes}
+            onStrokesChange={setOverlayStrokes}
+          />
+          </div>
         </main>
       </section>
     );

@@ -70,6 +70,8 @@ class NoteUpdate(BaseModel):
     is_favorite: Optional[bool] = None
     is_archived: Optional[bool] = None
     force_snapshot: bool = False
+    # 본문 위 자유 그림 레이어의 stroke 배열. None 이면 미수정.
+    overlay_strokes: Optional[List[dict]] = None
 
 
 class AttachmentOut(BaseModel):
@@ -112,6 +114,7 @@ class NoteDetail(BaseModel):
     deleted_at: Optional[datetime] = None
     tags: List[TagOut] = []
     attachments: List[AttachmentOut] = []
+    overlay_strokes: List[dict] = []
 
     model_config = {"from_attributes": True}
 

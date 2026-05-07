@@ -16,6 +16,10 @@ def text_default_false():
 def jsonb_default_empty():
     return text("'{}'::jsonb")
 
+
+def jsonb_default_empty_array():
+    return text("'[]'::jsonb")
+
 note_tags = Table(
     "note_tags",
     Base.metadata,
@@ -92,6 +96,15 @@ class Note(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_versioned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     meta: Mapped[dict] = mapped_column("metadata_json", JSONB, nullable=False, default=dict)
+    # 본문 위에 떠 있는 자유 그림 레이어의 stroke 들. 각 stroke 는 dict 로
+    # { id, tool, color, width, opacity, captureWidth, points: [[x,y], ...] }.
+    # 본문 텍스트와 무관하므로 NoteVersion 스냅샷 대상에는 넣지 않는다.
+    overlay_strokes: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=jsonb_default_empty_array(),
+    )
 
     folder: Mapped[Optional[Folder]] = relationship(back_populates="notes")
     tags: Mapped[List[Tag]] = relationship(secondary=note_tags, back_populates="notes")

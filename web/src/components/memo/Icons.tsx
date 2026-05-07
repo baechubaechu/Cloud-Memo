@@ -250,6 +250,51 @@ export function IconMusic(p: IconProps) {
   );
 }
 
+export function IconBrush(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="M9.06 11.9 8 13l-3 3 3 3 3-3 1.1-1.1" />
+      <path d="m20 4-9.7 9.7 3 3L20 7z" />
+    </Base>
+  );
+}
+
+export function IconHighlighter(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="m4 21 1-3 9-9 3 3-9 9z" />
+      <path d="M14 6l4-4 4 4-4 4z" />
+    </Base>
+  );
+}
+
+export function IconEraser(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="m20 13-7 7H7l-4-4 9-9z" />
+      <path d="m13 6 5 5" />
+    </Base>
+  );
+}
+
+export function IconUndo(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="M3 7h11a5 5 0 0 1 0 10H8" />
+      <path d="m7 3-4 4 4 4" />
+    </Base>
+  );
+}
+
+export function IconRedo(p: IconProps) {
+  return (
+    <Base {...p}>
+      <path d="M21 7H10a5 5 0 0 0 0 10h6" />
+      <path d="m17 3 4 4-4 4" />
+    </Base>
+  );
+}
+
 export function IconMoreHorizontal(p: IconProps) {
   return (
     <Base {...p}>

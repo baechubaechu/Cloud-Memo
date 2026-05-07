@@ -82,6 +82,7 @@ def _detail(n: Note) -> NoteDetail:
         deleted_at=n.deleted_at,
         tags=[TagOut.model_validate(t) for t in n.tags if t.deleted_at is None],
         attachments=[_attachment_out(a) for a in live_attachments],
+        overlay_strokes=list(n.overlay_strokes or []),
     )
 
 
@@ -241,6 +242,17 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
         n.is_archived = bool(data["is_archived"])
     if "tag_ids" in data and data["tag_ids"] is not None:
         _sync_tags(n, data["tag_ids"], db)
+    if "overlay_strokes" in data and data["overlay_strokes"] is not None:
+        # 그림 레이어는 본문과 별개의 흐름이라 스냅샷을 만들지 않는다. 너무 큰
+        # payload 가 들어오는 사고를 막기 위해 매우 큰 배열은 거절한다(상한
+        # 50_000 stroke). 일반 사용 케이스(노트당 보통 수백~수천 stroke)는
+        # 한참 여유 있는 값.
+        new_strokes = data["overlay_strokes"]
+        if not isinstance(new_strokes, list):
+            raise HTTPException(status_code=400, detail="overlay_strokes must be a list")
+        if len(new_strokes) > 50_000:
+            raise HTTPException(status_code=413, detail="too many strokes")
+        n.overlay_strokes = new_strokes
 
     db.commit()
     n2 = _load_with_relations(db, n.id, me.id)
