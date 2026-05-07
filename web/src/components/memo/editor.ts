@@ -15,6 +15,7 @@ import {
   parseAttachmentLine,
   parseChecklistLine,
   parseQuoteLine,
+  parseWikilinks,
   renderMarkdownLineHtml,
   serializeAttachmentMarker,
 } from "./markdown";
@@ -36,6 +37,15 @@ type InsertFileFn = (file: File) => void;
 let __insertFile: InsertFileFn | null = null;
 export function setEditorInsertFile(fn: InsertFileFn | null): void {
   __insertFile = fn;
+}
+
+// `[[노트 제목]]` 위키링크가 렌더된 결과 (`<a data-link="제목">`) 를 클릭했을 때
+// "그 제목의 노트를 연다 / 없으면 만든다" 콜백. setEditorInsertFile 과 같은 패턴
+// 으로, Workbench 가 매 렌더마다 최신 클로저를 주입한다.
+type NavigateLinkFn = (title: string) => void;
+let __navigateLink: NavigateLinkFn | null = null;
+export function setEditorNavigateLink(fn: NavigateLinkFn | null): void {
+  __navigateLink = fn;
 }
 
 // 본문에서 사용자가 마지막으로 둔 캐럿 위치. 제목 input 처럼 본문 바깥에 포커스가
@@ -334,6 +344,30 @@ function hydrateAttachmentsIn(
   }
 }
 
+// 비활성(렌더 모드) 줄 안의 `[[노트 제목]]` 위키링크 (`<a data-link="제목">`) 에
+// 클릭 핸들러를 붙인다. 위젯 root 의 mousedown 핸들러는 캐럿을 본문 안으로
+// 옮기기 때문에, 링크 자체에서는 mousedown / click 모두 stopPropagation 해서
+// "캐럿 이동 + 노트 이동" 이 동시에 일어나는 사고를 막는다.
+function hydrateWikilinksIn(root: HTMLElement): void {
+  const links = Array.from(root.querySelectorAll<HTMLElement>("a[data-link]"));
+  for (const link of links) {
+    const title = (link.getAttribute("data-link") || "").trim();
+    if (!title) continue;
+    link.style.cursor = "pointer";
+    link.classList.add("memo-wikilink");
+    link.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    link.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const fn = __navigateLink;
+      if (fn) fn(title);
+    });
+  }
+}
+
 // 렌더된 텍스트 element 안에서 [from, to] 글자 범위를 inline span으로 감싸 하이라이트 표시.
 export function applyInlineHighlight(text: HTMLElement, from: number, to: number): void {
   if (to <= from) return;
@@ -425,6 +459,40 @@ export class QuotePrefixWidget extends WidgetType {
   }
 }
 
+// 활성 줄에서도 Space 로 확정된 `[[노트 제목]]` 은 raw 마크다운 대신 링크처럼
+// 보이게 한다. 단, 커서가 링크 안에 있을 때는 편집 가능해야 하므로 이 위젯은
+// buildHybridDecorations 쪽에서 "커서가 범위 밖이고 뒤에 공백이 있는 링크" 에만
+// 붙인다.
+export class WikilinkInlineWidget extends WidgetType {
+  constructor(readonly title: string) {
+    super();
+  }
+  eq(other: WikilinkInlineWidget): boolean {
+    return this.title === other.title;
+  }
+  toDOM(): HTMLElement {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = this.title;
+    a.className = "memo-wikilink text-indigo-700 underline underline-offset-2";
+    a.setAttribute("data-link", this.title);
+    a.contentEditable = "false";
+    a.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      __navigateLink?.(this.title);
+    });
+    return a;
+  }
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
 export class RenderedMarkdownLineWidget extends WidgetType {
   constructor(
     readonly rawLine: string,
@@ -460,6 +528,8 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     el.appendChild(text);
     // 첨부 placeholder 가 있으면 토큰을 사용해 인증된 미디어로 교체.
     hydrateAttachmentsIn(text, view, this.rawLine, this.lineFrom);
+    // `[[노트 제목]]` 위키링크에 클릭 → 노트 이동 핸들러를 붙인다.
+    hydrateWikilinksIn(text);
     const checklist = parseChecklistLine(this.rawLine);
     if (checklist) {
       const toggle = text.querySelector<HTMLElement>("[data-checklist-toggle]");
@@ -661,6 +731,21 @@ function buildHybridDecorations(state: EditorView["state"]): DecorationSet {
         const prefixEnd = line.from + activeQuote.prefixLen;
         markDecos.push(
           Decoration.replace({ widget: new QuotePrefixWidget() }).range(line.from, prefixEnd),
+        );
+      }
+      // Space 로 확정된 위키링크는 활성 줄 안에서도 링크처럼 보인다.
+      // 확정 기준은 `[[title]] ` 처럼 닫는 괄호 바로 뒤에 공백이 생긴 상태.
+      // 커서/선택이 링크 내부에 닿아 있으면 raw 문법을 보여줘서 편집 가능하게 둔다.
+      for (const link of parseWikilinks(line.text)) {
+        const nextChar = line.text[link.to] ?? "";
+        if (nextChar && !/\s/.test(nextChar)) continue;
+        const linkFrom = line.from + link.from;
+        const linkTo = line.from + link.to;
+        const cursorInside = selMain.empty && selMain.head >= linkFrom && selMain.head <= linkTo;
+        const selectionOverlaps = hasRangeSelection && selTo > linkFrom && selFrom < linkTo;
+        if (cursorInside || selectionOverlaps) continue;
+        markDecos.push(
+          Decoration.replace({ widget: new WikilinkInlineWidget(link.title) }).range(linkFrom, linkTo),
         );
       }
       if (hasRangeSelection) {
@@ -1147,6 +1232,58 @@ export const editorUndoRedoKeymap = Prec.highest(
     { key: "Mod-y", run: redo },
     // macOS 사용자가 익숙한 redo 도 같이 지원. Windows/Linux 에서는 무해하다.
     { key: "Mod-Shift-z", run: redo },
+  ]),
+);
+
+// 위키링크 확정: closeBrackets 때문에 `[[나무]]` 를 입력 중일 때 실제 커서는
+// `[[나무|]]` (닫는 괄호 앞) 에 있을 수 있다. 이 상태에서 Space 를 누르면
+// 위키링크를 Space 로 확정한다. 두 가지 경로를 모두 처리해야 한다.
+//   1) 사용자가 직접 `[[query]]` 를 타이핑한 경우 (closeBrackets 가 `]]` 를 자동
+//      입력해 커서가 `[[query|]]` 위치에 있다). → `]]` 뒤에 공백을 추가한다.
+//   2) replaceWikilink 가 메뉴 선택 결과를 doc 에 박은 경우. 닫는 괄호를 일부러
+//      먹어버려서 doc 이 `[[Title|` 상태가 된다. → `]] ` 를 통째로 삽입한다.
+// 두 경로 모두 결과는 `[[Title]] ` 이므로 buildHybridDecorations 와
+// renderInlineMarkdown 이 동일하게 위젯/링크로 렌더링한다.
+export const editorWikilinkConfirmKeymap = Prec.high(
+  keymap.of([
+    {
+      key: "Space",
+      run(view) {
+        const { state } = view;
+        const sel = state.selection.main;
+        if (!sel.empty) return false;
+        const line = state.doc.lineAt(sel.head);
+        const offset = sel.head - line.from;
+        const beforeCursor = line.text.slice(0, offset);
+        const afterCursor = line.text.slice(offset);
+        if (!/\[\[([^\[\]\n]+)$/.test(beforeCursor)) return false;
+
+        if (afterCursor.startsWith("]]")) {
+          const insertAt = sel.head + 2;
+          view.dispatch({
+            changes: { from: insertAt, to: insertAt, insert: " " },
+            selection: { anchor: insertAt + 1 },
+            scrollIntoView: true,
+            userEvent: "input.wikilink.confirm",
+          });
+          return true;
+        }
+
+        if (!afterCursor.startsWith("]")) {
+          // 닫는 괄호가 아예 없는 상태 (replaceWikilink 가 먹어버림). `]] ` 를 통째로
+          // 삽입해 확정한다.
+          view.dispatch({
+            changes: { from: sel.head, to: sel.head, insert: "]] " },
+            selection: { anchor: sel.head + 3 },
+            scrollIntoView: true,
+            userEvent: "input.wikilink.confirm",
+          });
+          return true;
+        }
+
+        return false;
+      },
+    },
   ]),
 );
 

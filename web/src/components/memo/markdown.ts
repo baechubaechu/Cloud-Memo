@@ -111,7 +111,7 @@ export function renderInlineMarkdown(s: string): string {
   // Obsidian wikilink: [[note-name]]
   out = out.replace(
     /\[\[([^\]]+)\]\]/g,
-    `<a class="text-sky-700 underline underline-offset-2" href="#" data-link="$1">$1</a>`,
+    `<a class="memo-wikilink text-indigo-700 underline underline-offset-2" href="#" data-link="$1">$1</a>`,
   );
   // Markdown link: [text](url)
   out = out.replace(
@@ -120,6 +120,26 @@ export function renderInlineMarkdown(s: string): string {
   );
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/`([^`]+)`/g, '<code class="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.9em]">$1</code>');
+  return out;
+}
+
+export type WikilinkRange = {
+  from: number;
+  to: number;
+  title: string;
+};
+
+export function parseWikilinks(line: string): WikilinkRange[] {
+  const out: WikilinkRange[] = [];
+  const re = /\[\[([^\[\]\n]+)\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    out.push({
+      from: m.index,
+      to: m.index + m[0].length,
+      title: m[1],
+    });
+  }
   return out;
 }
 

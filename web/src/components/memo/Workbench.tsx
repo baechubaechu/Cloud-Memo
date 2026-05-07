@@ -46,12 +46,14 @@ import {
   editorNavAndDeleteKeymap,
   editorQuoteEnterKeymap,
   editorUndoRedoKeymap,
+  editorWikilinkConfirmKeymap,
   getLastDocCursor,
   hybridMarkdownField,
   isLastDocCursorExplicit,
   resetLastDocCursor,
   setEditorAuthContext,
   setEditorInsertFile,
+  setEditorNavigateLink,
 } from "./editor";
 import {
   REASON_LABEL,
@@ -111,6 +113,18 @@ type SlashMenuState = {
   to: number;
   query: string;
   /** 캐럿 위치의 뷰포트 픽셀 좌표 (메뉴를 그 옆에 띄우기 위해 저장). */
+  x: number;
+  y: number;
+} | null;
+
+// `[[<query>` 자동완성 메뉴 상태. 메뉴를 연 시점에 잡아둔 raw doc 좌표 from/to
+// 를 신뢰해서, 클릭/Enter 시점에 캐럿이 이동해도 정확한 자리에 치환된다.
+// from = `[[` 의 첫 글자 위치 (raw doc).
+// to   = 현재 캐럿 위치 (= 쿼리 끝).
+type WikilinkMenuState = {
+  from: number;
+  to: number;
+  query: string;
   x: number;
   y: number;
 } | null;
@@ -272,6 +286,11 @@ export function MemoWorkbench({
   // 슬래시 메뉴 업데이트 함수의 최신 closure 를 CodeMirror 확장에서 호출하기 위한 ref.
   // (React onChange 에만 의존하면 일부 입력에서 누락되는 케이스가 있어 직접 listener 로 옮긴다.)
   const updateSlashMenuRef = useRef<(view: EditorView) => void>(() => {});
+  // `[[` 자동완성 메뉴 상태 + 키보드 선택 인덱스 + 최신 update closure 슬롯.
+  // 슬래시 메뉴와 같은 패턴으로 동작한다.
+  const [wikilinkMenu, setWikilinkMenu] = useState<WikilinkMenuState>(null);
+  const [wikilinkSelected, setWikilinkSelected] = useState(0);
+  const updateWikilinkMenuRef = useRef<(view: EditorView) => void>(() => {});
   // 새 노트를 만든 직후 제목 input 으로 포커스를 자동 이동시킬지.
   const [autoFocusTitle, setAutoFocusTitle] = useState(false);
   // 음성 녹음 상태
@@ -1418,6 +1437,69 @@ export function MemoWorkbench({
     [],
   );
 
+  // ---------- 위키링크 자동완성 ([[ 입력 시) ----------
+
+  function updateWikilinkMenuFromView(view: EditorView): void {
+    const sel = view.state.selection.main;
+    if (!sel.empty) {
+      setWikilinkMenu((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const line = view.state.doc.lineAt(sel.head);
+    const beforeCursor = line.text.slice(0, sel.head - line.from);
+    // `[[` 다음에 `[`, `]`, 줄바꿈을 포함하지 않는 임의 문자열이 캐럿까지 이어질 때만
+    // 자동완성을 띄운다. 이미 `]]` 까지 닫혀 있는 링크를 다시 클릭한 케이스는
+    // beforeCursor 가 `[[foo]]` 로 끝나지 않아 (= `]` 가 들어간 순간) 매치가 풀린다.
+    const match = beforeCursor.match(/\[\[([^\[\]\n]*)$/);
+    if (!match) {
+      setWikilinkMenu((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const queryText = match[1] ?? "";
+    const from = sel.head - queryText.length - 2;
+    let x = 24;
+    let y = 80;
+    const cursorRect = view.coordsAtPos(sel.head);
+    if (cursorRect) {
+      x = cursorRect.left;
+      y = cursorRect.bottom + 4;
+    }
+    setWikilinkMenu((prev) => {
+      if (
+        prev &&
+        prev.from === from &&
+        prev.to === sel.head &&
+        prev.query === queryText &&
+        prev.x === x &&
+        prev.y === y
+      ) {
+        return prev;
+      }
+      return { from, to: sel.head, query: queryText, x, y };
+    });
+  }
+
+  updateWikilinkMenuRef.current = (view: EditorView) => updateWikilinkMenuFromView(view);
+
+  const wikilinkMenuExtension = useMemo(
+    () => [
+      EditorView.updateListener.of((u) => {
+        if (!u.docChanged && !u.selectionSet && !u.focusChanged) return;
+        const view = u.view;
+        queueMicrotask(() => updateWikilinkMenuRef.current(view));
+      }),
+      EditorView.domEventHandlers({
+        input: (_e, view) => {
+          queueMicrotask(() => updateWikilinkMenuRef.current(view));
+        },
+        keyup: (_e, view) => {
+          queueMicrotask(() => updateWikilinkMenuRef.current(view));
+        },
+      }),
+    ],
+    [],
+  );
+
   function buildAttachmentMarker(att: { id: string; original_filename: string; kind?: string }): string {
     const safeName = att.original_filename.replaceAll("]", "").replaceAll("[", "");
     if (att.kind === "image") return `![${safeName}](attachment://${att.id})`;
@@ -1776,6 +1858,198 @@ export function MemoWorkbench({
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [filteredSlashCommands, slashMenu, slashSelected]);
+
+  // ---------- 위키링크 자동완성 후보 / 키보드 / 삽입 / 클릭 네비게이션 ----------
+
+  // 위키링크 후보 항목. 기존 노트면 noteId 가 있고, "새로 만들기" 항목이면 없다.
+  type WikilinkSuggestion = {
+    kind: "existing" | "create";
+    title: string;
+    noteId?: string;
+  };
+
+  const wikilinkSuggestions = useMemo<WikilinkSuggestion[]>(() => {
+    if (!wikilinkMenu) return [];
+    const needle = wikilinkMenu.query.trim().toLowerCase();
+    const liveNotes = notes.filter((n) => !n.deleted_at);
+    const existing: WikilinkSuggestion[] = liveNotes
+      .filter((n) => {
+        const title = (n.title || "").toLowerCase();
+        if (!needle) return true;
+        return title.includes(needle);
+      })
+      .slice()
+      .sort((a, b) => {
+        const at = (a.title || "").toLowerCase();
+        const bt = (b.title || "").toLowerCase();
+        if (needle) {
+          const aStarts = at.startsWith(needle) ? 0 : 1;
+          const bStarts = bt.startsWith(needle) ? 0 : 1;
+          if (aStarts !== bStarts) return aStarts - bStarts;
+        }
+        return compareName(a.title || "", b.title || "");
+      })
+      .slice(0, 8)
+      .map((n) => ({ kind: "existing" as const, title: n.title || "(무제 노트)", noteId: n.id }));
+
+    const trimmed = wikilinkMenu.query.trim();
+    const exactExists = trimmed
+      ? liveNotes.some((n) => (n.title || "").toLowerCase() === trimmed.toLowerCase())
+      : false;
+    if (trimmed && !exactExists) {
+      existing.push({ kind: "create", title: trimmed });
+    }
+    return existing;
+  }, [wikilinkMenu, notes]);
+
+  // 메뉴 열림/쿼리 변경 시 선택 인덱스 클램프.
+  useEffect(() => {
+    if (!wikilinkMenu) {
+      setWikilinkSelected(0);
+      return;
+    }
+    setWikilinkSelected((prev) => {
+      const max = Math.max(0, wikilinkSuggestions.length - 1);
+      if (prev > max) return 0;
+      return prev;
+    });
+  }, [wikilinkMenu?.from, wikilinkMenu?.query, wikilinkSuggestions.length]);
+
+  // 메뉴에서 제목을 고르면 일부러 닫는 괄호를 doc 에서 빼버려서 `[[Title` 상태로
+  // 둔다. 그러면 parseWikilinks / renderInlineMarkdown 어디에서도 매치되지 않아
+  // active 줄이든 non-active 줄이든 무조건 raw 텍스트로만 보인다. 사용자가 Space
+  // 를 누를 때 editorWikilinkConfirmKeymap 이 `]] ` 를 통째로 붙여 `[[Title]] ` 로
+  // 확정시키고, 그때 비로소 위젯/링크로 렌더링된다.
+  function replaceWikilink(title: string): boolean {
+    const view = editorViewRef.current;
+    const menu = wikilinkMenu;
+    if (!view || !menu) return false;
+    const safeTitle = title.replace(/[\[\]\n]/g, " ").trim();
+    if (!safeTitle) {
+      setWikilinkMenu(null);
+      setWikilinkSelected(0);
+      return false;
+    }
+    const docLen = view.state.doc.length;
+    const from = Math.min(Math.max(0, menu.from), docLen);
+    let to = Math.min(Math.max(from, menu.to), docLen);
+    // closeBrackets 가 만들어둔 뒤쪽 `]]` (또는 `]`) 도 함께 삼킨다. 이렇게 하면
+    // doc 에는 `[[Title` 만 남아, parseWikilinks / renderInlineMarkdown 어디에서도
+    // 매치되지 않으므로 active/non-active 어떤 줄이든 raw 로만 보인다. 사용자가
+    // Space 를 눌러야 비로소 editorWikilinkConfirmKeymap 이 `]] ` 를 붙여서
+    // `[[Title]] ` 로 확정시키고, 그때 위젯으로 렌더링된다.
+    const trailing = view.state.doc.sliceString(to, Math.min(docLen, to + 2));
+    if (trailing.startsWith("]]")) {
+      to = Math.min(docLen, to + 2);
+    } else if (trailing.startsWith("]")) {
+      to = Math.min(docLen, to + 1);
+    }
+    const insert = `[[${safeTitle}`;
+    const targetCursor = from + insert.length;
+    view.dispatch({
+      changes: { from, to, insert },
+      selection: { anchor: targetCursor },
+      scrollIntoView: true,
+    });
+    view.focus();
+    setWikilinkMenu(null);
+    setWikilinkSelected(0);
+    return true;
+  }
+
+  // 같은 제목의 노트가 이미 있으면 그걸 열고, 없으면 새로 만들고 본문에 링크만
+  // 박는다. 만든 노트로 곧장 이동하지는 않는다 (사용자가 지금 편집하던 노트의
+  // 흐름을 끊지 않기 위해서). 사용자가 그 링크를 클릭하면 그때 navigateToWikilink
+  // 가 해당 노트를 연다.
+  const handleCreateNoteFromWikilink = useCallback(
+    async (title: string) => {
+      const trimmed = title.trim();
+      if (!trimmed) return;
+      try {
+        await api.createNote(token, { title: trimmed, content: "" });
+        await reloadNotes();
+      } catch (e) {
+        handleApiError(e);
+      }
+    },
+    [handleApiError, reloadNotes, token],
+  );
+
+  // 위키링크 클릭 → 같은 제목 노트로 이동. 없으면 그 자리에서 만든다.
+  const navigateToWikilink = useCallback(
+    async (rawTitle: string) => {
+      const title = rawTitle.trim();
+      if (!title) return;
+      const lower = title.toLowerCase();
+      const liveNotes = notes.filter((n) => !n.deleted_at);
+      const exact = liveNotes.find((n) => (n.title || "").toLowerCase() === lower);
+      const target =
+        exact ?? liveNotes.find((n) => (n.title || "").toLowerCase().startsWith(lower));
+      try {
+        if (target) {
+          await loadNote(target.id);
+          if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
+          return;
+        }
+        const draft = await api.createNote(token, { title, content: "" });
+        await reloadNotes();
+        await loadNote(draft.id);
+        if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
+      } catch (e) {
+        handleApiError(e);
+      }
+    },
+    [handleApiError, loadNote, notes, reloadNotes, token],
+  );
+
+  // CodeMirror 위젯이 항상 최신 navigateToWikilink (= notes/token 클로저) 를 호출
+  // 하도록 매 렌더마다 모듈 전역 슬롯을 갱신한다. setEditorInsertFile 과 같은 패턴.
+  useEffect(() => {
+    setEditorNavigateLink((title) => void navigateToWikilink(title));
+  });
+  useEffect(() => {
+    return () => setEditorNavigateLink(null);
+  }, []);
+
+  useEffect(() => {
+    if (!wikilinkMenu) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setWikilinkMenu(null);
+        return;
+      }
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setWikilinkSelected((i) => Math.min(wikilinkSuggestions.length - 1, i + 1));
+        return;
+      }
+      if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setWikilinkSelected((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (ev.key === "Enter" || ev.key === "Tab") {
+        const sug = wikilinkSuggestions[wikilinkSelected] ?? wikilinkSuggestions[0];
+        if (!sug) return;
+        // CodeMirror 의 keymap 이 같은 Enter 를 잡아 newline 을 끼워 넣는 일을
+        // 막기 위해 stopPropagation 까지 같이 호출한다. (preventDefault 만으로는
+        // Prec.highest 핸들러가 이미 처리해버리는 케이스가 있다.)
+        ev.preventDefault();
+        ev.stopPropagation();
+        const ok = replaceWikilink(sug.title);
+        if (ok && sug.kind === "create") {
+          void handleCreateNoteFromWikilink(sug.title);
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wikilinkMenu, wikilinkSuggestions, wikilinkSelected]);
 
   // ---------- Render ----------
 
@@ -3215,10 +3489,12 @@ export function MemoWorkbench({
                 editorCursorTracker,
                 editorCursorBackupSync,
                 editorChecklistAutoTrigger,
+                editorWikilinkConfirmKeymap,
                 editorUndoRedoKeymap,
                 editorQuoteEnterKeymap,
                 editorNavAndDeleteKeymap,
                 slashMenuExtension,
+                wikilinkMenuExtension,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {
@@ -3227,9 +3503,12 @@ export function MemoWorkbench({
               onChange={(value) => {
                 setContent(value);
                 if (!composingRef.current) scheduleAutosave();
-                // 슬래시 커맨드: onChange 도 즉시 평가해서 메뉴를 갱신.
+                // 슬래시 / 위키링크 메뉴: onChange 시점에도 즉시 평가해서 갱신.
                 const view = editorViewRef.current;
-                if (view) updateSlashMenuFromView(view);
+                if (view) {
+                  updateSlashMenuFromView(view);
+                  updateWikilinkMenuFromView(view);
+                }
               }}
               className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
             />
@@ -3265,6 +3544,66 @@ export function MemoWorkbench({
                         <span className="block text-[11px] text-ink-900/45">
                           {cmd.description}
                         </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+            {wikilinkMenu && wikilinkSuggestions.length > 0 ? (
+              <div
+                className="fixed z-[70] w-72 overflow-hidden rounded-xl border border-ink-900/12 bg-white text-[13px] shadow-xl"
+                style={{ left: wikilinkMenu.x, top: wikilinkMenu.y }}
+              >
+                <div className="border-b border-ink-900/8 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-900/40">
+                  위키링크 · ↑↓ 이동 · Enter 선택 · Esc 닫기
+                </div>
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {wikilinkSuggestions.map((sug, idx) => {
+                    const selected = idx === wikilinkSelected;
+                    return (
+                      <button
+                        key={`${sug.kind}:${sug.noteId ?? sug.title}`}
+                        type="button"
+                        className={`block w-full px-3 py-2 text-left ${
+                          selected ? "bg-indigo-50" : "hover:bg-black/5"
+                        }`}
+                        onMouseDown={(ev) => ev.preventDefault()}
+                        onMouseEnter={() => setWikilinkSelected(idx)}
+                        onClick={() => {
+                          const ok = replaceWikilink(sug.title);
+                          if (ok && sug.kind === "create") {
+                            void handleCreateNoteFromWikilink(sug.title);
+                          }
+                        }}
+                      >
+                        {sug.kind === "create" ? (
+                          <>
+                            <span
+                              className={`block font-semibold ${
+                                selected ? "text-indigo-700" : "text-emerald-700"
+                              }`}
+                            >
+                              + 새 노트 만들기
+                            </span>
+                            <span className="block truncate text-[11px] text-ink-900/55">
+                              “{sug.title}” 라는 제목으로 새 노트 생성
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className={`block truncate font-semibold ${
+                                selected ? "text-indigo-700" : "text-ink-900"
+                              }`}
+                            >
+                              {sug.title}
+                            </span>
+                            <span className="block text-[11px] text-ink-900/45">
+                              기존 노트 링크
+                            </span>
+                          </>
+                        )}
                       </button>
                     );
                   })}
