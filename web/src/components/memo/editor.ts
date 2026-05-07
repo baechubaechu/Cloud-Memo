@@ -108,6 +108,41 @@ function getBlobUrlFor(kind: "image" | "audio" | "file", attId: string): Promise
     .catch(() => null);
 }
 
+// 이미지 블록의 "선택" 상태(=툴바/리사이즈 핸들 노출 여부)를 attachment id 기준
+// 으로 한 군데에서 추적한다. 마커 갱신으로 위젯 DOM 이 다시 만들어져도 같은
+// 첨부면 선택 상태가 그대로 유지되고, 본문 다른 곳을 클릭하면 자동 해제된다.
+let __selectedAttachmentId: string | null = null;
+let __imageBlockGlobalsInstalled = false;
+function installImageBlockGlobals(): void {
+  if (__imageBlockGlobalsInstalled || typeof document === "undefined") return;
+  __imageBlockGlobalsInstalled = true;
+  document.addEventListener(
+    "mousedown",
+    (ev) => {
+      const t = ev.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest(".memo-image-block")) return;
+      if (__selectedAttachmentId === null) return;
+      __selectedAttachmentId = null;
+      document
+        .querySelectorAll(".memo-image-block.is-selected")
+        .forEach((el) => el.classList.remove("is-selected"));
+    },
+    true,
+  );
+}
+function setSelectedAttachment(id: string, target: HTMLElement): void {
+  __selectedAttachmentId = id;
+  if (typeof document !== "undefined") {
+    document
+      .querySelectorAll(".memo-image-block.is-selected")
+      .forEach((el) => {
+        if (el !== target) el.classList.remove("is-selected");
+      });
+  }
+  target.classList.add("is-selected");
+}
+
 function updateImageMarkerLine(
   view: EditorView,
   rawLine: string,
@@ -143,10 +178,11 @@ function hydrateAttachmentsIn(
     const label = node.getAttribute("data-att-label") || "";
     if (!id) continue;
     if (kind === "image") {
+      installImageBlockGlobals();
       const width = Number(node.getAttribute("data-att-width") || "") || 360;
       const align = (node.getAttribute("data-att-align") || "left") as AttachmentImageAlign;
       const outer = document.createElement("span");
-      outer.className = "memo-image-block group relative my-2 inline-block max-w-full align-top";
+      outer.className = "memo-image-block relative my-2 inline-block max-w-full align-top";
       outer.style.width = `${Math.min(1200, Math.max(80, width))}px`;
       outer.style.maxWidth = "100%";
       outer.style.display = "block";
@@ -160,6 +196,9 @@ function hydrateAttachmentsIn(
         outer.style.marginLeft = "0";
         outer.style.marginRight = "auto";
       }
+      // 위젯이 다시 만들어져도(예: 리사이즈로 마커가 갱신되면 widget eq() 가
+      // false 여서 새로 그림) 같은 첨부면 선택 상태를 복원한다.
+      if (__selectedAttachmentId === id) outer.classList.add("is-selected");
 
       const img = document.createElement("img");
       img.alt = label;
@@ -167,9 +206,17 @@ function hydrateAttachmentsIn(
       img.style.display = "block";
       img.style.userSelect = "none";
       img.draggable = false;
+      img.style.cursor = "pointer";
+      // 이미지 자체 클릭 → 그 첨부를 선택 상태로 바꿔 툴바/핸들 노출.
+      // mousedown 은 위젯의 mousedown(다음 줄로 캐럿 이동) 이 그대로 돌게 둔다.
+      img.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setSelectedAttachment(id, outer);
+      });
 
       const toolbar = document.createElement("span");
-      toolbar.className = "memo-image-toolbar absolute left-2 top-2 z-10 hidden gap-1 rounded-md bg-white/90 p-1 text-[11px] shadow-sm ring-1 ring-ink-900/10 group-hover:flex";
+      toolbar.className = "memo-image-toolbar absolute left-2 top-2 z-10 gap-1 rounded-md bg-white/90 p-1 text-[11px] shadow-sm ring-1 ring-ink-900/10";
       const makeButton = (text: string, title: string, onClick: () => void) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -194,7 +241,7 @@ function hydrateAttachmentsIn(
       );
 
       const handle = document.createElement("span");
-      handle.className = "memo-image-resize-handle absolute bottom-1 right-1 hidden h-4 w-4 cursor-nwse-resize rounded-sm bg-white/90 shadow-sm ring-1 ring-ink-900/15 group-hover:block";
+      handle.className = "memo-image-resize-handle absolute bottom-1 right-1 h-4 w-4 cursor-nwse-resize rounded-sm bg-white/90 shadow-sm ring-1 ring-ink-900/15";
       handle.style.touchAction = "none";
       handle.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
@@ -854,5 +901,24 @@ export const cmEditorVisualTheme = EditorView.theme({
   ".memo-selection": {
     backgroundColor: "#cfd0e8",
     borderRadius: "2px",
+  },
+  // 이미지 블록 툴바/리사이즈 핸들은 기본 숨김. 이미지를 클릭하면 outer 가
+  // .is-selected 가 되어 노출. 이미지 외 다른 곳을 클릭하면 자동 해제.
+  ".memo-image-toolbar": {
+    display: "none",
+  },
+  ".memo-image-resize-handle": {
+    display: "none",
+  },
+  ".memo-image-block.is-selected .memo-image-toolbar": {
+    display: "inline-flex",
+  },
+  ".memo-image-block.is-selected .memo-image-resize-handle": {
+    display: "block",
+  },
+  ".memo-image-block.is-selected": {
+    outline: "2px solid #6366f1",
+    outlineOffset: "2px",
+    borderRadius: "0.5rem",
   },
 });
