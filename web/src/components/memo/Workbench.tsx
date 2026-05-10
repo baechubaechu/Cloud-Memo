@@ -26,9 +26,7 @@ import {
   IconStop,
   IconTrash,
   IconUndo,
-  IconX,
 } from "./Icons";
-import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
 import {
   cmEditorVisualTheme,
   editorChecklistAutoTrigger,
@@ -87,7 +85,6 @@ import {
 } from "./OverlayDrawingLayer";
 import { parseChecklistLine } from "./markdown";
 import type {
-  AppCommand,
   ConfirmDialogState,
   ContextMenuTarget,
   CreatingFolderState,
@@ -104,6 +101,9 @@ import { overlaySignature, todayNoteTitle, extractTodoItems } from "./workbenchH
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
+import { MobileListCard, MobileNavCard } from "./WorkbenchMobilePanels";
+import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
+import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
 
 // (REASON_LABEL, formatBytes, formatDateTime, compareName, DND 상수, dndHasMime 은 ./utils 로 이동)
@@ -1518,85 +1518,19 @@ export function MemoWorkbench({
     window.setTimeout(() => commandInputRef.current?.focus(), 0);
   }, [commandPaletteOpen]);
 
-  const appCommands: AppCommand[] = [
-    {
-      id: "new-note",
-      title: "새 노트",
-      description: "루트에 빈 노트를 만들고 제목 입력으로 이동",
-      shortcut: "N",
-      keywords: "new note 새노트",
-      run: () => void handleNewNote(),
-    },
-    {
-      id: "today-note",
-      title: "오늘 노트 열기",
-      description: `${todayNoteTitle()} 노트를 열거나 새로 만들기`,
-      shortcut: "Daily",
-      keywords: "daily today 오늘 데일리 날짜",
-      run: () => void handleOpenTodayNote(),
-    },
-    {
-      id: "insert-image",
-      title: "이미지 삽입",
-      description: "현재 본문 캐럿 위치에 이미지 업로드",
-      shortcut: "/이미지",
-      keywords: "image photo picture 이미지 사진",
-      disabled: !activeNoteId,
-      run: () => imageInputRef.current?.click(),
-    },
-    {
-      id: "toggle-drawing",
-      title: drawingMode ? "그리기 모드 끄기" : "그리기 모드 켜기",
-      description: "본문 위 자유 필기 레이어 토글",
-      shortcut: "/그림",
-      keywords: "draw canvas pen 그림 필기",
-      disabled: !activeNoteId,
-      run: () => setDrawingMode((v) => !v),
-    },
-    {
-      id: "todos-panel",
-      title: "모든 할 일 보기",
-      description: "우측 패널에서 전체 체크리스트 모아보기",
-      shortcut: "Todos",
-      keywords: "todo checklist 할일 체크리스트",
-      disabled: !activeNoteId,
-      run: () => setRightPanel(rightPanel === "todos" ? null : "todos"),
-    },
-    {
-      id: "files-panel",
-      title: "첨부 패널 열기",
-      description: "현재 노트의 첨부 파일 보기",
-      keywords: "file attachment 첨부 파일",
-      disabled: !activeNoteId,
-      run: () => setRightPanel(rightPanel === "files" ? null : "files"),
-    },
-    {
-      id: "versions-panel",
-      title: "버전 히스토리 열기",
-      description: "현재 노트의 저장 버전 확인",
-      keywords: "version history 버전 히스토리",
-      disabled: !activeNoteId,
-      run: () => setRightPanel(rightPanel === "versions" ? null : "versions"),
-    },
-    {
-      id: "focus-search",
-      title: "검색으로 이동",
-      description: "사이드바 검색창에 포커스",
-      shortcut: "Search",
-      keywords: "search find 검색 찾기",
-      run: () => {
-        setSidebarCollapsed(false);
-        searchInputRef.current?.focus();
-      },
-    },
-    {
-      id: "export-markdown",
-      title: "Markdown 내보내기",
-      description: "전체 노트 Markdown export 다운로드",
-      keywords: "export markdown 내보내기 백업",
-      run: () => void handleExport(),
-    },
-  ];
+  const appCommands = buildAppCommands({
+    activeNoteId,
+    drawingMode,
+    rightPanel,
+    setRightPanel,
+    setDrawingMode,
+    setSidebarCollapsed,
+    imageInputRef,
+    searchInputRef,
+    handleNewNote,
+    handleOpenTodayNote,
+    handleExport,
+  });
 
   const commandNeedle = commandQuery.trim().toLowerCase();
   const filteredAppCommands = appCommands.filter((cmd) => {
@@ -1604,73 +1538,12 @@ export function MemoWorkbench({
     return `${cmd.title} ${cmd.description} ${cmd.keywords}`.toLowerCase().includes(commandNeedle);
   });
 
-  const slashCommands = [
-    {
-      id: "todo",
-      title: "체크리스트",
-      description: "체크박스 할 일 항목 삽입",
-      keywords: "todo checklist 체크 할일",
-      run: () => replaceSlashCommand("- [ ] "),
-    },
-    {
-      id: "h1",
-      title: "제목 1",
-      description: "큰 제목 삽입",
-      keywords: "heading h1 제목",
-      run: () => replaceSlashCommand("# "),
-    },
-    {
-      id: "h2",
-      title: "제목 2",
-      description: "중간 제목 삽입",
-      keywords: "heading h2 제목",
-      run: () => replaceSlashCommand("## "),
-    },
-    {
-      id: "quote",
-      title: "인용",
-      description: "인용 블록 삽입",
-      keywords: "quote blockquote 인용",
-      run: () => replaceSlashCommand("> "),
-    },
-    {
-      id: "date-link",
-      title: "오늘 날짜 링크",
-      description: `[[${todayNoteTitle()}]] 삽입`,
-      keywords: "date today daily 날짜 오늘",
-      run: () => replaceSlashCommand(`[[${todayNoteTitle()}]]`),
-    },
-    {
-      id: "image",
-      title: "이미지",
-      description: "이미지를 업로드해 현재 위치에 삽입",
-      keywords: "image photo 이미지 사진",
-      run: () => {
-        replaceSlashCommand("");
-        imageInputRef.current?.click();
-      },
-    },
-    {
-      id: "drawing",
-      title: "그리기",
-      description: "본문 위 자유 필기 모드 켜기",
-      keywords: "draw canvas 그림 필기",
-      run: () => {
-        replaceSlashCommand("");
-        setDrawingMode(true);
-      },
-    },
-    {
-      id: "audio",
-      title: "음성 녹음",
-      description: "녹음을 시작하고 완료 후 본문에 첨부",
-      keywords: "audio mic voice 음성 녹음",
-      run: () => {
-        replaceSlashCommand("");
-        void startAudioRecording();
-      },
-    },
-  ];
+  const slashCommands = buildSlashCommands({
+    imageInputRef,
+    setDrawingMode,
+    startAudioRecording,
+    replaceSlashCommand,
+  });
 
   const slashNeedle = slashMenu?.query.trim().toLowerCase() ?? "";
   const filteredSlashCommands = slashCommands.filter((cmd) => {
@@ -1801,219 +1674,41 @@ export function MemoWorkbench({
   // ---------- Render ----------
 
   const navCard = (
-    <section className="flex h-full flex-col gap-4 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-ink-900/45">사이드바</p>
-          <h2 className="text-lg font-semibold">정리</h2>
-        </div>
-        <button
-          type="button"
-          className="rounded-full border border-ink-900/12 px-3 py-1 text-xs font-medium text-ink-900/70 hover:bg-ink-900/5"
-          onClick={onLogout}
-        >
-          로그아웃
-        </button>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {(
-          [
-            ["active", "일반"],
-            ["favorite", "★ 즐겨찾기"],
-            ["archive", "아카이브"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            type="button"
-            key={key}
-            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
-              mode === key
-                ? key === "archive"
-                  ? "bg-slate-600 text-white"
-                  : key === "favorite"
-                    ? "bg-yellow-500 text-white"
-                    : "bg-ink-900 text-white"
-                : "bg-ink-900/5 text-ink-900/75"
-            }`}
-            onClick={() => {
-              setMode(key);
-              setSelectedTagId(undefined);
-              setPanel("list");
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium text-ink-900">폴더</p>
-          <button type="button" className="text-xs text-sky-700 underline underline-offset-2" onClick={() => beginCreateFolder(null)}>
-            추가
-          </button>
-        </div>
-        <select
-          className="block w-full rounded-xl border border-ink-900/12 bg-white px-3 py-2 text-[14px]"
-          value={selectedFolderId ?? ""}
-          disabled={debouncedQuery.length >= 1}
-          onChange={(ev) => {
-            setSelectedFolderId(ev.target.value || undefined);
-            setSelectedTagId(undefined);
-          }}
-        >
-          <option value="">모든 노트</option>
-          {folderOptions.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div className="space-y-2 overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium text-ink-900">태그 필터</p>
-          <button type="button" className="text-xs text-sky-700 underline underline-offset-2" onClick={handleCreateTag}>
-            추가
-          </button>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => {
-            const chosen = selectedTagId === tag.id;
-            return (
-              <button
-                key={tag.id}
-                type="button"
-                disabled={debouncedQuery.length >= 1}
-                className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                  chosen ? "border-ink-900 bg-ink-900 text-white" : "border-transparent bg-white text-ink-900/75 ring-1 ring-ink-900/10"
-                }`}
-                onClick={() => setSelectedTagId(chosen ? undefined : tag.id)}
-              >
-                #{tag.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="mt-auto space-y-3 border-t border-ink-900/10 pt-3 text-xs text-ink-900/65">
-        {usage ? (
-          <div className="space-y-1 rounded-xl bg-white px-3 py-2 ring-1 ring-ink-900/10">
-            <div className="flex items-center justify-between font-semibold text-ink-900">
-              <span>저장소 사용량</span>
-              <span>{formatBytes(usage.total_bytes)}</span>
-            </div>
-            <p className="text-[11px] text-ink-900/55">{usage.upload_root}</p>
-            <ul className="text-[11px]">
-              {Object.entries(usage.by_kind).map(([k, v]) => (
-                <li key={k} className="flex justify-between gap-2">
-                  <span>{k}</span>
-                  <span>{formatBytes(Number(v))}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="text-[11px] text-ink-900/45">첨부 {usage.attachments_count}개</p>
-          </div>
-        ) : null}
-        <button
-          type="button"
-          className="w-full rounded-xl border border-ink-900/15 bg-white px-3 py-2 font-semibold text-ink-900 hover:bg-ink-900 hover:text-white"
-          onClick={handleExport}
-        >
-          Markdown으로 내보내기 (.zip)
-        </button>
-      </div>
-    </section>
+    <MobileNavCard
+      mode={mode}
+      setMode={setMode}
+      setPanel={setPanel}
+      selectedFolderId={selectedFolderId}
+      setSelectedFolderId={setSelectedFolderId}
+      selectedTagId={selectedTagId}
+      setSelectedTagId={setSelectedTagId}
+      debouncedQuery={debouncedQuery}
+      folderOptions={folderOptions}
+      tags={tags}
+      usage={usage}
+      beginCreateFolder={beginCreateFolder}
+      handleCreateTag={handleCreateTag}
+      handleExport={handleExport}
+      onLogout={onLogout}
+    />
   );
 
-  const listHeading =
-    mode === "favorite" ? "즐겨찾기" : mode === "archive" ? "아카이브" : "목록";
-
   const listCard = (
-    <section className="flex h-full flex-col border-ink-900/10 md:border-r">
-      <header className="flex flex-col gap-3 border-b border-ink-900/10 p-4">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-ink-900/45">노트</p>
-            <h2 className="text-lg font-semibold">{listHeading}</h2>
-          </div>
-          <button
-            type="button"
-            disabled={debouncedQuery.length >= 1}
-            onClick={handleNewNote}
-            className="rounded-full bg-ink-900 px-4 py-2 text-xs font-semibold text-white disabled:bg-ink-900/35"
-          >
-            새 노트
-          </button>
-        </div>
-        <input
-          placeholder="🔍 검색 (제목·본문·태그·첨부 파일명, ILIKE)"
-          value={query}
-          onChange={(ev) => setQuery(ev.target.value)}
-          className="rounded-xl border border-ink-900/12 px-3 py-2 text-sm shadow-sm outline-none focus:border-sky-500"
-        />
-      </header>
-      <ul className="flex-1 divide-y divide-ink-900/6 overflow-y-auto">
-        {notes.length === 0 ? (
-          <li className="px-4 py-8 text-center text-sm text-ink-900/50">표시할 노트가 없습니다.</li>
-        ) : null}
-        {notes.map((n) => {
-          const isActive = n.id === activeNoteId;
-          return (
-            <li
-              key={n.id}
-              className={`flex flex-col gap-1 px-4 py-3.5 hover:bg-white active:bg-white/80 ${isActive ? "bg-white shadow-inner" : "bg-transparent"}`}
-            >
-              <div
-                role="button"
-                tabIndex={0}
-                className="flex cursor-pointer flex-col items-start gap-1 text-left outline-none focus:ring-2 focus:ring-sky-500/40"
-                onClick={() => void loadNote(n.id)}
-                onKeyDown={(ev) => {
-                  if (ev.key === "Enter" || ev.key === " ") {
-                    ev.preventDefault();
-                    void loadNote(n.id);
-                  }
-                }}
-              >
-                <span className="line-clamp-1 text-[15px] font-semibold text-ink-900">
-                  {n.is_favorite ? <span className="mr-1 text-yellow-500">★</span> : null}
-                  {n.title || "무제 노트"}
-                  {n.is_archived ? (
-                    <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 text-[10px] text-slate-700">archive</span>
-                  ) : null}
-                </span>
-                <span className="text-xs text-ink-900/50">
-                  {new Date(n.updated_at).toLocaleString()} · 태그 {n.tags.length}
-                </span>
-                {n.tags.length > 0 ? (
-                  <span className="flex flex-wrap gap-1 pt-1">
-                    {n.tags.slice(0, 3).map((t) => (
-                      <span
-                        key={t.id}
-                        className="rounded-full bg-ink-900/5 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-ink-900/65"
-                      >
-                        #{t.name}
-                      </span>
-                    ))}
-                  </span>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="self-start text-[11px] font-semibold text-red-600"
-                onClick={() => void handleListItemAction(n)}
-              >
-                삭제
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <MobileListCard
+      mode={mode}
+      notes={notes}
+      activeNoteId={activeNoteId}
+      query={query}
+      onQueryChange={setQuery}
+      debouncedQuery={debouncedQuery}
+      handleNewNote={handleNewNote}
+      loadNote={(id) => {
+        void loadNote(id);
+      }}
+      handleListItemAction={(note) => {
+        void handleListItemAction(note);
+      }}
+    />
   );
 
   // ---------- 데스크탑 옵시디언풍 사이드 ----------
@@ -2734,193 +2429,21 @@ export function MemoWorkbench({
   // ---------- 우측 토글 패널: 첨부 / 할 일 / 버전 ----------
   const rightPanelCard =
     activeNote && !activeNote.deleted_at && rightPanel ? (
-      <aside className="flex h-full min-w-0 flex-col border-l border-ink-900/10 bg-[#fafaf9]">
-        <header className="flex h-9 items-center gap-1 border-b border-ink-900/10 px-2 text-[12px]">
-          <button
-            type="button"
-            onClick={() => setRightPanel("files")}
-            className={`rounded px-2 py-0.5 ${rightPanel === "files" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"}`}
-          >
-            첨부
-          </button>
-          <button
-            type="button"
-            onClick={() => setRightPanel("versions")}
-            className={`rounded px-2 py-0.5 ${rightPanel === "versions" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"}`}
-          >
-            버전
-          </button>
-          <button
-            type="button"
-            onClick={() => setRightPanel("todos")}
-            className={`rounded px-2 py-0.5 ${rightPanel === "todos" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"}`}
-          >
-            할 일
-          </button>
-          <button
-            type="button"
-            onClick={() => setRightPanel(null)}
-            title="패널 닫기"
-            aria-label="패널 닫기"
-            className="ml-auto grid h-7 w-7 place-items-center rounded text-ink-900/55 hover:bg-black/5 hover:text-ink-900"
-          >
-            <IconX size={14} />
-          </button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-3 text-[13px]">
-          {rightPanel === "files" ? (
-            <div className="space-y-3">
-              <label className="block w-full cursor-pointer rounded border border-dashed border-ink-900/20 bg-white/50 px-3 py-2 text-center text-[12px] text-ink-900/60 hover:bg-white">
-                파일 업로드
-                <input
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(ev) => void handleUpload(ev.target.files)}
-                />
-              </label>
-              {(() => {
-                const liveAttachments = activeNote.attachments.filter((a) => !a.deleted_at);
-                if (liveAttachments.length === 0) {
-                  return (
-                    <p className="text-[12px] text-ink-900/45">
-                      첨부가 없습니다. 이미지·오디오·일반 파일 모두 가능합니다.
-                    </p>
-                  );
-                }
-                return liveAttachments.map((att) => (
-                  <div key={att.id} className="rounded border border-ink-900/12 bg-white p-2">
-                    {att.kind === "image" ? (
-                      <AuthenticatedImagePreview
-                        attachmentId={att.id}
-                        token={token}
-                        caption={att.original_filename}
-                      />
-                    ) : (
-                      <p className="text-[12px] text-ink-900/70">
-                        <span className="font-mono">[{att.kind}]</span> {att.original_filename} ·{" "}
-                        {formatBytes(att.size_bytes)}
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      className="mt-2 w-full rounded border border-amber-200 px-2 py-1 text-[11px] text-amber-800 hover:bg-amber-50"
-                      onClick={() => void handleTrashAttachment(att)}
-                    >
-                      제거
-                    </button>
-                  </div>
-                ));
-              })()}
-            </div>
-          ) : rightPanel === "todos" ? (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-[12px] font-semibold text-ink-900">모든 할 일</p>
-                  <p className="text-[11px] text-ink-900/45">
-                    미완료 {todoItems.filter((x) => !x.checked).length}개 · 완료{" "}
-                    {todoItems.filter((x) => x.checked).length}개
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void refreshTodoItems()}
-                  className="rounded border border-ink-900/10 bg-white px-2 py-1 text-[11px] text-ink-900/60 hover:bg-black/5"
-                >
-                  새로고침
-                </button>
-              </div>
-              {todoLoading ? (
-                <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
-                  할 일을 불러오는 중…
-                </p>
-              ) : todoItems.length === 0 ? (
-                <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
-                  아직 체크리스트가 없습니다. 본문에 <span className="font-mono">- [ ] 할 일</span> 로 작성해보세요.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {todoItems
-                    .slice()
-                    .sort((a, b) => Number(a.checked) - Number(b.checked) || a.noteTitle.localeCompare(b.noteTitle))
-                    .map((item) => (
-                      <article
-                        key={item.id}
-                        className={`rounded border border-ink-900/10 bg-white p-2 ${
-                          item.checked ? "opacity-60" : ""
-                        }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <button
-                            type="button"
-                            aria-label={item.checked ? "할 일 미완료로 바꾸기" : "할 일 완료로 바꾸기"}
-                            aria-pressed={item.checked}
-                            onClick={() => void toggleTodoFromPanel(item)}
-                            className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border text-[11px] leading-none ${
-                              item.checked
-                                ? "border-emerald-500 bg-emerald-500 text-white"
-                                : "border-ink-900/25 bg-white text-transparent hover:border-emerald-500"
-                            }`}
-                          >
-                            ✓
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void loadNote(item.noteId)}
-                            className="min-w-0 flex-1 text-left"
-                          >
-                            <p
-                              className={`break-words text-[13px] ${
-                                item.checked ? "line-through text-ink-900/45" : "text-ink-900"
-                              }`}
-                            >
-                              {item.text}
-                            </p>
-                            <p className="mt-1 truncate text-[11px] text-ink-900/40">
-                              {item.noteTitle} · {item.lineIndex + 1}번째 줄
-                            </p>
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {versions.length === 0 ? (
-                <p className="text-[12px] text-ink-900/45">아직 저장된 버전이 없습니다.</p>
-              ) : (
-                versions.slice(0, 32).map((v) => (
-                  <article key={v.id} className="rounded border border-ink-900/12 bg-white px-2 py-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-[12px] font-semibold text-ink-900">#{v.version_index}</p>
-                        <p className="text-[11px] text-ink-900/55">
-                          {new Date(v.created_at).toLocaleString()}
-                        </p>
-                        <p className="text-[10px] uppercase tracking-[0.18em] text-ink-900/45">
-                          {REASON_LABEL[v.reason] ?? v.reason}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="text-[11px] font-semibold text-sky-700"
-                        onClick={() => void handleRestoreVersion(v)}
-                      >
-                        되돌리기
-                      </button>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-[12px] text-ink-900/65">{v.title}</p>
-                  </article>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      </aside>
+      <WorkbenchRightPanel
+        activeNote={activeNote}
+        rightPanel={rightPanel}
+        setRightPanel={setRightPanel}
+        token={token}
+        handleUpload={handleUpload}
+        handleTrashAttachment={handleTrashAttachment}
+        todoItems={todoItems}
+        todoLoading={todoLoading}
+        refreshTodoItems={refreshTodoItems}
+        toggleTodoFromPanel={toggleTodoFromPanel}
+        loadNote={loadNote}
+        versions={versions}
+        handleRestoreVersion={handleRestoreVersion}
+      />
     ) : null;
 
   return (

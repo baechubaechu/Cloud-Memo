@@ -71,6 +71,18 @@ export type AppCommand = {
 };
 
 /**
+ * 본문에서 `/` 입력으로 뜨는 슬래시 메뉴 한 줄 항목. AppCommand 와 비슷하지만
+ * shortcut / disabled 가 없고 description 이 항상 보인다.
+ */
+export type SlashCommand = {
+  id: string;
+  title: string;
+  description: string;
+  keywords: string;
+  run: () => void;
+};
+
+/**
  * 사이드바 트리에서 드래그 중인 항목. dragstart 시 dataTransfer 에 박는 mime
  * (DND_MIME_NOTE / DND_MIME_NOTE_MULTI / DND_MIME_FOLDER) 와 별개로, 컴포넌트
  * 내부 상태로도 들고 다녀서 dragover / drop 핸들러가 즉시 동기 판단을 할 수

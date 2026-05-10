@@ -270,10 +270,10 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 
 ## 12. 기술 부채 / 리팩토링
 
-- [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1차 분리 완료)*
+- [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1·2·3차 분리 완료, 계속 진행)*
   - 이전 라운드에서 한 번 쪼갰지만, 위키링크/슬래시 메뉴/그림 레이어/오디오/
     이미지 블록/멀티선택/명령 팔레트 등이 추가되면서 다시 4000줄을 넘김.
-  - 1차 진행 결과 (이번 작업)
+  - 1차 결과 (`3879090`)
     - 타입/순수 헬퍼 분리: `workbenchTypes.ts` (Panel/ListMode/SlashMenuState/
       ContextMenuTarget/HoverMeta/ConfirmDialogState/AppCommand 등),
       `workbenchHelpers.ts` (overlaySignature/todayNoteTitle/extractTodoItems).
@@ -281,11 +281,45 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
       (ContextMenu/HoverTooltip/ConfirmDialog).
     - 위키링크 React state + JSX 메뉴 + 키보드 effect 제거 → `wikilinkExtension.ts`.
     - 결과: `Workbench.tsx` ≈3856줄 → ≈3620줄.
-  - 다음 단계 후보
-    - **사이드바**: 트리 / 검색 / 멀티선택 / 드래그 앤 드롭 → `WorkbenchSidebar.tsx`
-    - **에디터 메뉴 훅들**: 슬래시 메뉴, 명령 팔레트 hook → `useEditorMenus.ts`
-    - **미디어 toolbar**: 이미지/오디오/그림 토글 → `EditorMediaToolbar.tsx`
-    - **본문 직렬화**: 마커 ↔ CodeMirror doc 변환 / paste 처리 → `editorPayload.ts`
+  - 2차 결과 (`8a2da67`)
+    - 사이드바 트리 + 검색 + DnD + 멀티선택 + 푸터 → `WorkbenchSidebar.tsx` (845줄).
+    - `DragItem`/`CreatingFolderState`/`RenamingState`/`SelectionAnchor` 를
+      `workbenchTypes.ts` 로 같이 승격.
+    - 결과: `Workbench.tsx` ≈3620줄 → ≈3028줄.
+  - 3차 결과 (이번 라운드)
+    - 모바일 정리/목록 카드 → `WorkbenchMobilePanels.tsx`
+      (`MobileNavCard` + `MobileListCard`).
+    - 명령 팔레트 / 슬래시 커맨드 정의 → `workbenchCommands.ts`
+      (`buildAppCommands` + `buildSlashCommands`, deps 객체로 주입).
+      관련 타입 (`SlashCommand`) 도 `workbenchTypes.ts` 로 같이 이동.
+    - 우측 토글 패널 (첨부 / 할 일 / 버전) → `WorkbenchRightPanel.tsx`
+      (3개의 내부 sub 컴포넌트 `FilesPanel` / `TodosPanel` / `VersionsPanel`).
+    - `Workbench.tsx` 에서 더 이상 안 쓰이는 import 제거
+      (`AppCommand`, `IconX`, `AuthenticatedImagePreview`).
+    - 결과: `Workbench.tsx` ≈3028줄 → ≈2551줄.
+  - 다음 단계 (남은 추천 순서)
+    1. `Workbench.tsx` 추가 UI 덩어리 분리.
+       - **에디터 쉘** (제목 input + 그리기 toolbar + 미디어 toolbar +
+         CodeMirror 호스팅) → `WorkbenchEditor.tsx`. 가장 큰 덩어리이고
+         이미지 paste/drop, drawing overlay, autocomplete 컨텍스트 등
+         결합도가 높아서 별도 라운드로 처리.
+    2. `editor.ts` 를 기능별 파일로 쪼갠다 (한 파일이 1400줄로 또 비대).
+       - `editorWidgets.ts` (Checklist / Quote / Wikilink / RenderedLine 위젯).
+       - `editorMedia.ts` (paste / drop / dragover / blob hydrate).
+       - `editorKeymaps.ts` (Nav+Delete / Quote Enter / Undo / Checklist auto).
+       - `editorDecorations.ts` (`hybridMarkdownField`, `buildHybridDecorations`).
+    3. 마지막에 `createMemoEditorExtensions(...)` factory 로 묶어서
+       `editor.ts` 의 모듈 전역 슬롯 (`__authCtx`, `__insertFile`, `__navigateLink`)
+       을 인스턴스별 의존성 주입으로 교체.
+       - 동기: 지금은 에디터가 사실상 한 개라 잘 동작하지만, 미리보기 / 분할
+         편집 / 임베드 에디터 같은 게 생기면 곧장 충돌. HMR 중 슬롯이 stale
+         하게 남거나 새 슬롯과 섞이는 케이스도 있음.
+       - 새 API 후보:
+         ```ts
+         createMemoEditorExtensions({ authCtx, insertFile, navigateLink })
+         ```
+         → 호출자가 인스턴스마다 의존성을 명시적으로 넘긴다.
+       - 이 단계는 위 1·2 가 끝난 뒤에 한다 (지금 손대면 영향 범위가 너무 큼).
   - 분리하면서 props drilling 보다 `EditorContext` 같은 가벼운 컨텍스트로
     상태 공유 범위를 줄이는 것을 같이 검토.
 
@@ -301,4 +335,11 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
   `CommandPalette`, `WorkbenchOverlays`) + 위키링크 자동완성 재설계
   (`wikilinkExtension`, CodeMirror autocomplete 기반) 완료. §11 위키링크 항목과
   §0 우선순위에서 위키링크 재설계 항목을 닫고, 다음 단계는 backlinks 패널.
+- 2026-05-10: `Workbench.tsx` 2차 분리 → `WorkbenchSidebar.tsx` (트리 + 검색 +
+  DnD + 멀티선택). `Workbench.tsx` ≈3620 → ≈3028줄. 다음 추천 순서를 §12 에
+  기록 (UI 추가 분리 → `editor.ts` 기능별 분리 → factory 의존성 주입).
+- 2026-05-10: `Workbench.tsx` 3차 분리 → `WorkbenchMobilePanels.tsx`
+  (모바일 정리/목록 카드), `workbenchCommands.ts` (명령 팔레트·슬래시 커맨드
+  정의), `WorkbenchRightPanel.tsx` (첨부/할 일/버전). `Workbench.tsx`
+  ≈3028 → ≈2551줄. 다음 단계는 에디터 쉘 (`WorkbenchEditor.tsx`).
 - 항목을 추가/소진할 때마다 가능하면 같은 PR 안에서 이 파일도 같이 갱신.
