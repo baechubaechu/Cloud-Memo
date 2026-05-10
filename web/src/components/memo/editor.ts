@@ -733,12 +733,11 @@ function buildHybridDecorations(state: EditorView["state"]): DecorationSet {
           Decoration.replace({ widget: new QuotePrefixWidget() }).range(line.from, prefixEnd),
         );
       }
-      // Space 로 확정된 위키링크는 활성 줄 안에서도 링크처럼 보인다.
-      // 확정 기준은 `[[title]] ` 처럼 닫는 괄호 바로 뒤에 공백이 생긴 상태.
-      // 커서/선택이 링크 내부에 닿아 있으면 raw 문법을 보여줘서 편집 가능하게 둔다.
+      // 활성 줄 위키링크: 캐럿/선택이 링크 범위 안에 있으면 raw `[[Title]]` 로
+      // 두어 편집 가능하게 두고, 그 외에는 항상 위젯으로 렌더한다. 트레일링
+      // 스페이스 같은 별도 신호는 더 이상 보지 않는다 (autocomplete 가 한 번의
+      // transaction 으로 항상 `[[Title]] ` 을 박아주기 때문에 신호가 무의미).
       for (const link of parseWikilinks(line.text)) {
-        const nextChar = line.text[link.to] ?? "";
-        if (nextChar && !/\s/.test(nextChar)) continue;
         const linkFrom = line.from + link.from;
         const linkTo = line.from + link.to;
         const cursorInside = selMain.empty && selMain.head >= linkFrom && selMain.head <= linkTo;
@@ -1237,55 +1236,10 @@ export const editorUndoRedoKeymap = Prec.highest(
 
 // 위키링크 확정: closeBrackets 때문에 `[[나무]]` 를 입력 중일 때 실제 커서는
 // `[[나무|]]` (닫는 괄호 앞) 에 있을 수 있다. 이 상태에서 Space 를 누르면
-// 위키링크를 Space 로 확정한다. 두 가지 경로를 모두 처리해야 한다.
-//   1) 사용자가 직접 `[[query]]` 를 타이핑한 경우 (closeBrackets 가 `]]` 를 자동
-//      입력해 커서가 `[[query|]]` 위치에 있다). → `]]` 뒤에 공백을 추가한다.
-//   2) replaceWikilink 가 메뉴 선택 결과를 doc 에 박은 경우. 닫는 괄호를 일부러
-//      먹어버려서 doc 이 `[[Title|` 상태가 된다. → `]] ` 를 통째로 삽입한다.
-// 두 경로 모두 결과는 `[[Title]] ` 이므로 buildHybridDecorations 와
-// renderInlineMarkdown 이 동일하게 위젯/링크로 렌더링한다.
-export const editorWikilinkConfirmKeymap = Prec.high(
-  keymap.of([
-    {
-      key: "Space",
-      run(view) {
-        const { state } = view;
-        const sel = state.selection.main;
-        if (!sel.empty) return false;
-        const line = state.doc.lineAt(sel.head);
-        const offset = sel.head - line.from;
-        const beforeCursor = line.text.slice(0, offset);
-        const afterCursor = line.text.slice(offset);
-        if (!/\[\[([^\[\]\n]+)$/.test(beforeCursor)) return false;
-
-        if (afterCursor.startsWith("]]")) {
-          const insertAt = sel.head + 2;
-          view.dispatch({
-            changes: { from: insertAt, to: insertAt, insert: " " },
-            selection: { anchor: insertAt + 1 },
-            scrollIntoView: true,
-            userEvent: "input.wikilink.confirm",
-          });
-          return true;
-        }
-
-        if (!afterCursor.startsWith("]")) {
-          // 닫는 괄호가 아예 없는 상태 (replaceWikilink 가 먹어버림). `]] ` 를 통째로
-          // 삽입해 확정한다.
-          view.dispatch({
-            changes: { from: sel.head, to: sel.head, insert: "]] " },
-            selection: { anchor: sel.head + 3 },
-            scrollIntoView: true,
-            userEvent: "input.wikilink.confirm",
-          });
-          return true;
-        }
-
-        return false;
-      },
-    },
-  ]),
-);
+// (위키링크 확정 keymap 은 ./wikilinkExtension 의 autocomplete `apply` 가
+//  한 transaction 으로 `[[Title]] ` 을 박아주면서 사라졌다. 사용자가 직접
+//  `[[abc]]` 를 타이핑한 케이스는 trailing 공백 없이도 buildHybridDecorations
+//  가 cursor-outside 만 체크해 위젯으로 렌더한다.)
 
 // 노션처럼 `[]` 뒤에서 Space 를 누르면 체크박스로 변환한다. `[` 입력 자동완성으로
 // `[]` 가 만들어진 순간에는 아직 사용자의 의도가 확실하지 않으므로 건드리지 않는다.

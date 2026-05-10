@@ -46,7 +46,6 @@ import {
   editorNavAndDeleteKeymap,
   editorQuoteEnterKeymap,
   editorUndoRedoKeymap,
-  editorWikilinkConfirmKeymap,
   getLastDocCursor,
   hybridMarkdownField,
   isLastDocCursorExplicit,
@@ -76,7 +75,6 @@ import {
   type ReactElement,
 } from "react";
 
-import { parseChecklistLine } from "./markdown";
 import type {
   Attachment,
   Folder,
@@ -94,78 +92,28 @@ import {
   type OverlayDrawingLayerHandle,
   type OverlayDrawingTool,
 } from "./OverlayDrawingLayer";
-
-type Panel = "nav" | "list" | "editor";
-
-type ListMode = "active" | "favorite" | "archive";
-
-type TodoPanelItem = {
-  id: string;
-  noteId: string;
-  noteTitle: string;
-  lineIndex: number;
-  checked: boolean;
-  text: string;
-};
-
-type SlashMenuState = {
-  from: number;
-  to: number;
-  query: string;
-  /** 캐럿 위치의 뷰포트 픽셀 좌표 (메뉴를 그 옆에 띄우기 위해 저장). */
-  x: number;
-  y: number;
-} | null;
-
-// `[[<query>` 자동완성 메뉴 상태. 메뉴를 연 시점에 잡아둔 raw doc 좌표 from/to
-// 를 신뢰해서, 클릭/Enter 시점에 캐럿이 이동해도 정확한 자리에 치환된다.
-// from = `[[` 의 첫 글자 위치 (raw doc).
-// to   = 현재 캐럿 위치 (= 쿼리 끝).
-type WikilinkMenuState = {
-  from: number;
-  to: number;
-  query: string;
-  x: number;
-  y: number;
-} | null;
+import { parseChecklistLine } from "./markdown";
+import type {
+  AppCommand,
+  ConfirmDialogState,
+  ContextMenuTarget,
+  HoverMeta,
+  Panel,
+  ListMode,
+  TodoPanelItem,
+  SlashMenuState,
+} from "./workbenchTypes";
+import { overlaySignature, todayNoteTitle, extractTodoItems } from "./workbenchHelpers";
+import { CommandPalette } from "./CommandPalette";
+import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
+import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
 
 // (REASON_LABEL, formatBytes, formatDateTime, compareName, DND 상수, dndHasMime 은 ./utils 로 이동)
 // (escapeHtml 등 마크다운 렌더링은 ./markdown 으로 이동)
 // (CodeMirror 위젯/상태/테마/이벤트 핸들러는 ./editor 로 이동)
-
-/** 그림 레이어 stroke 배열이 변했는지 가볍게 비교하기 위한 시그니처. */
-function overlaySignature(strokes: OverlayStroke[]): string {
-  if (!strokes || strokes.length === 0) return "0:";
-  const last = strokes[strokes.length - 1];
-  // 길이 + 마지막 stroke id + 마지막 점 개수만 보면 일반 편집에서 충돌은 없다.
-  // (서버 응답이 들어와도 같은 길이 + 같은 last id 면 동일하다고 본다.)
-  return `${strokes.length}:${last?.id ?? ""}:${last?.points?.length ?? 0}`;
-}
-
-function todayNoteTitle(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function extractTodoItems(note: { id: string; title: string }, content: string): TodoPanelItem[] {
-  return content.split("\n").flatMap((line, index) => {
-    const item = parseChecklistLine(line);
-    if (!item) return [];
-    return [
-      {
-        id: `${note.id}:${index}`,
-        noteId: note.id,
-        noteTitle: note.title || "제목 없음",
-        lineIndex: index,
-        checked: item.checked,
-        text: item.text.trim() || "(빈 할 일)",
-      },
-    ];
-  });
-}
+// (Panel/ListMode/TodoPanelItem/SlashMenuState 등 타입은 ./workbenchTypes 로 이동)
+// (overlaySignature/todayNoteTitle/extractTodoItems 헬퍼는 ./workbenchHelpers 로 이동)
+// (위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장으로 이동)
 
 export function MemoWorkbench({
   token,
@@ -204,11 +152,7 @@ export function MemoWorkbench({
   const [todoLoading, setTodoLoading] = useState(false);
   // 옵시디언풍 폴더 트리: 어떤 폴더가 펼쳐져 있는지
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
-  // 우클릭 컨텍스트 메뉴 (폴더 / 노트 / 빈 영역)
-  type ContextMenuTarget =
-    | { kind: "folder"; id: string; x: number; y: number }
-    | { kind: "note"; id: string; x: number; y: number }
-    | { kind: "blank"; x: number; y: number };
+  // 우클릭 컨텍스트 메뉴 (폴더 / 노트 / 빈 영역) — 타입은 ./workbenchTypes 로 이동.
   const [contextMenu, setContextMenu] = useState<ContextMenuTarget | null>(null);
   // 인라인 이름 편집 (폴더 / 노트 통합)
   const [renaming, setRenaming] = useState<
@@ -231,23 +175,9 @@ export function MemoWorkbench({
   const [folderDropHoverId, setFolderDropHoverId] = useState<string | null>(null);
   // 사이드바 헤더(루트) 드롭 활성화 표시
   const [rootDropActive, setRootDropActive] = useState(false);
-  const [confirmDialog, setConfirmDialog] = useState<{
-    title: string;
-    message: string;
-    confirmLabel: string;
-  } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const confirmResolverRef = useRef<((ok: boolean) => void) | null>(null);
-  type HoverMeta = {
-    kind: "folder" | "note";
-    id: string;
-    label: string;
-    createdAt?: string | null;
-    updatedAt?: string | null;
-    folderCount?: number;
-    noteCount?: number;
-    x: number;
-    y: number;
-  };
+  // HoverMeta 타입은 ./workbenchTypes 로 이동.
   const [hoverMeta, setHoverMeta] = useState<HoverMeta | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   // 노트 다중 선택(사이드바): 같은 folder_id 위계에서 Shift 범위 선택 지원
@@ -286,11 +216,9 @@ export function MemoWorkbench({
   // 슬래시 메뉴 업데이트 함수의 최신 closure 를 CodeMirror 확장에서 호출하기 위한 ref.
   // (React onChange 에만 의존하면 일부 입력에서 누락되는 케이스가 있어 직접 listener 로 옮긴다.)
   const updateSlashMenuRef = useRef<(view: EditorView) => void>(() => {});
-  // `[[` 자동완성 메뉴 상태 + 키보드 선택 인덱스 + 최신 update closure 슬롯.
-  // 슬래시 메뉴와 같은 패턴으로 동작한다.
-  const [wikilinkMenu, setWikilinkMenu] = useState<WikilinkMenuState>(null);
-  const [wikilinkSelected, setWikilinkSelected] = useState(0);
-  const updateWikilinkMenuRef = useRef<(view: EditorView) => void>(() => {});
+  // 위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장이
+  // 직접 들고 있다. 메뉴 상태 / 키보드 선택 / DOM 좌표 추적 모두 CodeMirror 가
+  // 관리하므로 React state 는 두지 않는다.
   // 새 노트를 만든 직후 제목 input 으로 포커스를 자동 이동시킬지.
   const [autoFocusTitle, setAutoFocusTitle] = useState(false);
   // 음성 녹음 상태
@@ -1437,68 +1365,8 @@ export function MemoWorkbench({
     [],
   );
 
-  // ---------- 위키링크 자동완성 ([[ 입력 시) ----------
-
-  function updateWikilinkMenuFromView(view: EditorView): void {
-    const sel = view.state.selection.main;
-    if (!sel.empty) {
-      setWikilinkMenu((prev) => (prev === null ? prev : null));
-      return;
-    }
-    const line = view.state.doc.lineAt(sel.head);
-    const beforeCursor = line.text.slice(0, sel.head - line.from);
-    // `[[` 다음에 `[`, `]`, 줄바꿈을 포함하지 않는 임의 문자열이 캐럿까지 이어질 때만
-    // 자동완성을 띄운다. 이미 `]]` 까지 닫혀 있는 링크를 다시 클릭한 케이스는
-    // beforeCursor 가 `[[foo]]` 로 끝나지 않아 (= `]` 가 들어간 순간) 매치가 풀린다.
-    const match = beforeCursor.match(/\[\[([^\[\]\n]*)$/);
-    if (!match) {
-      setWikilinkMenu((prev) => (prev === null ? prev : null));
-      return;
-    }
-    const queryText = match[1] ?? "";
-    const from = sel.head - queryText.length - 2;
-    let x = 24;
-    let y = 80;
-    const cursorRect = view.coordsAtPos(sel.head);
-    if (cursorRect) {
-      x = cursorRect.left;
-      y = cursorRect.bottom + 4;
-    }
-    setWikilinkMenu((prev) => {
-      if (
-        prev &&
-        prev.from === from &&
-        prev.to === sel.head &&
-        prev.query === queryText &&
-        prev.x === x &&
-        prev.y === y
-      ) {
-        return prev;
-      }
-      return { from, to: sel.head, query: queryText, x, y };
-    });
-  }
-
-  updateWikilinkMenuRef.current = (view: EditorView) => updateWikilinkMenuFromView(view);
-
-  const wikilinkMenuExtension = useMemo(
-    () => [
-      EditorView.updateListener.of((u) => {
-        if (!u.docChanged && !u.selectionSet && !u.focusChanged) return;
-        const view = u.view;
-        queueMicrotask(() => updateWikilinkMenuRef.current(view));
-      }),
-      EditorView.domEventHandlers({
-        input: (_e, view) => {
-          queueMicrotask(() => updateWikilinkMenuRef.current(view));
-        },
-        keyup: (_e, view) => {
-          queueMicrotask(() => updateWikilinkMenuRef.current(view));
-        },
-      }),
-    ],
-    [],
-  );
+  // (위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장에서
+  // 직접 처리한다. 메뉴 / 키보드 / 좌표 / dispatch 모두 CodeMirror 가 소유.)
 
   function buildAttachmentMarker(att: { id: string; original_filename: string; kind?: string }): string {
     const safeName = att.original_filename.replaceAll("]", "").replaceAll("[", "");
@@ -1656,7 +1524,7 @@ export function MemoWorkbench({
     window.setTimeout(() => commandInputRef.current?.focus(), 0);
   }, [commandPaletteOpen]);
 
-  const appCommands = [
+  const appCommands: AppCommand[] = [
     {
       id: "new-note",
       title: "새 노트",
@@ -1859,108 +1727,13 @@ export function MemoWorkbench({
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [filteredSlashCommands, slashMenu, slashSelected]);
 
-  // ---------- 위키링크 자동완성 후보 / 키보드 / 삽입 / 클릭 네비게이션 ----------
-
-  // 위키링크 후보 항목. 기존 노트면 noteId 가 있고, "새로 만들기" 항목이면 없다.
-  type WikilinkSuggestion = {
-    kind: "existing" | "create";
-    title: string;
-    noteId?: string;
-  };
-
-  const wikilinkSuggestions = useMemo<WikilinkSuggestion[]>(() => {
-    if (!wikilinkMenu) return [];
-    const needle = wikilinkMenu.query.trim().toLowerCase();
-    const liveNotes = notes.filter((n) => !n.deleted_at);
-    const existing: WikilinkSuggestion[] = liveNotes
-      .filter((n) => {
-        const title = (n.title || "").toLowerCase();
-        if (!needle) return true;
-        return title.includes(needle);
-      })
-      .slice()
-      .sort((a, b) => {
-        const at = (a.title || "").toLowerCase();
-        const bt = (b.title || "").toLowerCase();
-        if (needle) {
-          const aStarts = at.startsWith(needle) ? 0 : 1;
-          const bStarts = bt.startsWith(needle) ? 0 : 1;
-          if (aStarts !== bStarts) return aStarts - bStarts;
-        }
-        return compareName(a.title || "", b.title || "");
-      })
-      .slice(0, 8)
-      .map((n) => ({ kind: "existing" as const, title: n.title || "(무제 노트)", noteId: n.id }));
-
-    const trimmed = wikilinkMenu.query.trim();
-    const exactExists = trimmed
-      ? liveNotes.some((n) => (n.title || "").toLowerCase() === trimmed.toLowerCase())
-      : false;
-    if (trimmed && !exactExists) {
-      existing.push({ kind: "create", title: trimmed });
-    }
-    return existing;
-  }, [wikilinkMenu, notes]);
-
-  // 메뉴 열림/쿼리 변경 시 선택 인덱스 클램프.
-  useEffect(() => {
-    if (!wikilinkMenu) {
-      setWikilinkSelected(0);
-      return;
-    }
-    setWikilinkSelected((prev) => {
-      const max = Math.max(0, wikilinkSuggestions.length - 1);
-      if (prev > max) return 0;
-      return prev;
-    });
-  }, [wikilinkMenu?.from, wikilinkMenu?.query, wikilinkSuggestions.length]);
-
-  // 메뉴에서 제목을 고르면 일부러 닫는 괄호를 doc 에서 빼버려서 `[[Title` 상태로
-  // 둔다. 그러면 parseWikilinks / renderInlineMarkdown 어디에서도 매치되지 않아
-  // active 줄이든 non-active 줄이든 무조건 raw 텍스트로만 보인다. 사용자가 Space
-  // 를 누를 때 editorWikilinkConfirmKeymap 이 `]] ` 를 통째로 붙여 `[[Title]] ` 로
-  // 확정시키고, 그때 비로소 위젯/링크로 렌더링된다.
-  function replaceWikilink(title: string): boolean {
-    const view = editorViewRef.current;
-    const menu = wikilinkMenu;
-    if (!view || !menu) return false;
-    const safeTitle = title.replace(/[\[\]\n]/g, " ").trim();
-    if (!safeTitle) {
-      setWikilinkMenu(null);
-      setWikilinkSelected(0);
-      return false;
-    }
-    const docLen = view.state.doc.length;
-    const from = Math.min(Math.max(0, menu.from), docLen);
-    let to = Math.min(Math.max(from, menu.to), docLen);
-    // closeBrackets 가 만들어둔 뒤쪽 `]]` (또는 `]`) 도 함께 삼킨다. 이렇게 하면
-    // doc 에는 `[[Title` 만 남아, parseWikilinks / renderInlineMarkdown 어디에서도
-    // 매치되지 않으므로 active/non-active 어떤 줄이든 raw 로만 보인다. 사용자가
-    // Space 를 눌러야 비로소 editorWikilinkConfirmKeymap 이 `]] ` 를 붙여서
-    // `[[Title]] ` 로 확정시키고, 그때 위젯으로 렌더링된다.
-    const trailing = view.state.doc.sliceString(to, Math.min(docLen, to + 2));
-    if (trailing.startsWith("]]")) {
-      to = Math.min(docLen, to + 2);
-    } else if (trailing.startsWith("]")) {
-      to = Math.min(docLen, to + 1);
-    }
-    const insert = `[[${safeTitle}`;
-    const targetCursor = from + insert.length;
-    view.dispatch({
-      changes: { from, to, insert },
-      selection: { anchor: targetCursor },
-      scrollIntoView: true,
-    });
-    view.focus();
-    setWikilinkMenu(null);
-    setWikilinkSelected(0);
-    return true;
-  }
+  // ---------- 위키링크 클릭 네비게이션 + 신규 노트 생성 ----------
 
   // 같은 제목의 노트가 이미 있으면 그걸 열고, 없으면 새로 만들고 본문에 링크만
-  // 박는다. 만든 노트로 곧장 이동하지는 않는다 (사용자가 지금 편집하던 노트의
-  // 흐름을 끊지 않기 위해서). 사용자가 그 링크를 클릭하면 그때 navigateToWikilink
-  // 가 해당 노트를 연다.
+  // 박는다. autocomplete 확장에서 "새 노트 만들기" 항목을 고를 때 이 함수를
+  // 호출한다. 만든 노트로 곧장 이동하지는 않는다 (사용자가 편집하던 노트의
+  // 흐름을 끊지 않기 위해). 그 노트로 가고 싶으면 새로 박힌 위키링크를 클릭하면
+  // navigateToWikilink 가 그때 연다.
   const handleCreateNoteFromWikilink = useCallback(
     async (title: string) => {
       const trimmed = title.trim();
@@ -2011,45 +1784,25 @@ export function MemoWorkbench({
     return () => setEditorNavigateLink(null);
   }, []);
 
-  useEffect(() => {
-    if (!wikilinkMenu) return;
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setWikilinkMenu(null);
-        return;
-      }
-      if (ev.key === "ArrowDown") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setWikilinkSelected((i) => Math.min(wikilinkSuggestions.length - 1, i + 1));
-        return;
-      }
-      if (ev.key === "ArrowUp") {
-        ev.preventDefault();
-        ev.stopPropagation();
-        setWikilinkSelected((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (ev.key === "Enter" || ev.key === "Tab") {
-        const sug = wikilinkSuggestions[wikilinkSelected] ?? wikilinkSuggestions[0];
-        if (!sug) return;
-        // CodeMirror 의 keymap 이 같은 Enter 를 잡아 newline 을 끼워 넣는 일을
-        // 막기 위해 stopPropagation 까지 같이 호출한다. (preventDefault 만으로는
-        // Prec.highest 핸들러가 이미 처리해버리는 케이스가 있다.)
-        ev.preventDefault();
-        ev.stopPropagation();
-        const ok = replaceWikilink(sug.title);
-        if (ok && sug.kind === "create") {
-          void handleCreateNoteFromWikilink(sug.title);
-        }
-      }
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wikilinkMenu, wikilinkSuggestions, wikilinkSelected]);
+  // 위키링크 autocomplete 확장은 한 번만 구성한다. notes 가 바뀔 때마다 확장을
+  // 새로 만들면 CodeMirror 가 reconfig 를 일으켜 무겁고, autocomplete 메뉴가
+  // 열려 있는 동안 상태가 깨진다. 그래서 실제 데이터(notes / 노트 생성 콜백) 는
+  // ref 로 들고, 확장은 ref 를 통해 항상 최신 클로저를 읽는다.
+  const wikilinkNotesRef = useRef(notes);
+  wikilinkNotesRef.current = notes;
+  const wikilinkCreateRef = useRef(handleCreateNoteFromWikilink);
+  wikilinkCreateRef.current = handleCreateNoteFromWikilink;
+  const wikilinkExt = useMemo(
+    () =>
+      wikilinkAutocompleteExtension({
+        getNotes: () =>
+          wikilinkNotesRef.current
+            .filter((n) => !n.deleted_at)
+            .map((n) => ({ id: n.id, title: n.title || "" })),
+        createNote: (title) => void wikilinkCreateRef.current(title),
+      }),
+    [],
+  );
 
   // ---------- Render ----------
 
@@ -3489,12 +3242,11 @@ export function MemoWorkbench({
                 editorCursorTracker,
                 editorCursorBackupSync,
                 editorChecklistAutoTrigger,
-                editorWikilinkConfirmKeymap,
                 editorUndoRedoKeymap,
                 editorQuoteEnterKeymap,
                 editorNavAndDeleteKeymap,
                 slashMenuExtension,
-                wikilinkMenuExtension,
+                wikilinkExt,
               ]}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={(view) => {
@@ -3503,11 +3255,11 @@ export function MemoWorkbench({
               onChange={(value) => {
                 setContent(value);
                 if (!composingRef.current) scheduleAutosave();
-                // 슬래시 / 위키링크 메뉴: onChange 시점에도 즉시 평가해서 갱신.
+                // 슬래시 메뉴: onChange 시점에도 즉시 평가해서 갱신.
+                // (위키링크 메뉴는 CodeMirror autocomplete 가 직접 들고 있다.)
                 const view = editorViewRef.current;
                 if (view) {
                   updateSlashMenuFromView(view);
-                  updateWikilinkMenuFromView(view);
                 }
               }}
               className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
@@ -3550,66 +3302,9 @@ export function MemoWorkbench({
                 </div>
               </div>
             ) : null}
-            {wikilinkMenu && wikilinkSuggestions.length > 0 ? (
-              <div
-                className="fixed z-[70] w-72 overflow-hidden rounded-xl border border-ink-900/12 bg-white text-[13px] shadow-xl"
-                style={{ left: wikilinkMenu.x, top: wikilinkMenu.y }}
-              >
-                <div className="border-b border-ink-900/8 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-900/40">
-                  위키링크 · ↑↓ 이동 · Enter 선택 · Esc 닫기
-                </div>
-                <div className="max-h-72 overflow-y-auto py-1">
-                  {wikilinkSuggestions.map((sug, idx) => {
-                    const selected = idx === wikilinkSelected;
-                    return (
-                      <button
-                        key={`${sug.kind}:${sug.noteId ?? sug.title}`}
-                        type="button"
-                        className={`block w-full px-3 py-2 text-left ${
-                          selected ? "bg-indigo-50" : "hover:bg-black/5"
-                        }`}
-                        onMouseDown={(ev) => ev.preventDefault()}
-                        onMouseEnter={() => setWikilinkSelected(idx)}
-                        onClick={() => {
-                          const ok = replaceWikilink(sug.title);
-                          if (ok && sug.kind === "create") {
-                            void handleCreateNoteFromWikilink(sug.title);
-                          }
-                        }}
-                      >
-                        {sug.kind === "create" ? (
-                          <>
-                            <span
-                              className={`block font-semibold ${
-                                selected ? "text-indigo-700" : "text-emerald-700"
-                              }`}
-                            >
-                              + 새 노트 만들기
-                            </span>
-                            <span className="block truncate text-[11px] text-ink-900/55">
-                              “{sug.title}” 라는 제목으로 새 노트 생성
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <span
-                              className={`block truncate font-semibold ${
-                                selected ? "text-indigo-700" : "text-ink-900"
-                              }`}
-                            >
-                              {sug.title}
-                            </span>
-                            <span className="block text-[11px] text-ink-900/45">
-                              기존 노트 링크
-                            </span>
-                          </>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
+            {/* 위키링크 자동완성 메뉴는 CodeMirror autocomplete 가 직접 그린다.
+                React JSX 오버레이로 두면 메뉴 ↔ 에디터 selection 사이의 timing
+                desync 가 잡기 어려워서 메뉴 자체의 소유권을 CodeMirror 로 옮겼다. */}
           </section>
           {/* 본문 위에 떠 있는 자유 그림 레이어. drawingMode 가 false 면 입력
               이 통과돼서 텍스트 편집에 영향 없음. */}
@@ -3831,74 +3526,19 @@ export function MemoWorkbench({
         </div>
       ) : null}
 
-      {commandPaletteOpen ? (
-        <div
-          className="fixed inset-0 z-[90] bg-black/20 p-4 backdrop-blur-[1px]"
-          onMouseDown={() => setCommandPaletteOpen(false)}
-        >
-          <div
-            className="mx-auto mt-[10vh] w-full max-w-xl overflow-hidden rounded-2xl border border-ink-900/12 bg-white shadow-2xl"
-            onMouseDown={(ev) => ev.stopPropagation()}
-          >
-            <div className="border-b border-ink-900/10 p-3">
-              <input
-                ref={commandInputRef}
-                value={commandQuery}
-                onChange={(ev) => setCommandQuery(ev.target.value)}
-                onKeyDown={(ev) => {
-                  if (ev.key === "Escape") {
-                    ev.preventDefault();
-                    setCommandPaletteOpen(false);
-                    return;
-                  }
-                  if (ev.key === "Enter") {
-                    ev.preventDefault();
-                    const cmd = filteredAppCommands.find((x) => !x.disabled);
-                    if (!cmd) return;
-                    setCommandPaletteOpen(false);
-                    setCommandQuery("");
-                    cmd.run();
-                  }
-                }}
-                placeholder="명령 검색... 새 노트, 오늘 노트, 이미지, 그리기"
-                className="h-11 w-full rounded-xl border border-ink-900/10 bg-[#fafaf9] px-3 text-[15px] outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
-              />
-            </div>
-            <div className="max-h-[50vh] overflow-y-auto p-2">
-              {filteredAppCommands.length === 0 ? (
-                <p className="px-3 py-6 text-center text-[13px] text-ink-900/45">일치하는 명령이 없습니다.</p>
-              ) : (
-                filteredAppCommands.map((cmd) => (
-                  <button
-                    key={cmd.id}
-                    type="button"
-                    disabled={cmd.disabled}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-40"
-                    onClick={() => {
-                      setCommandPaletteOpen(false);
-                      setCommandQuery("");
-                      cmd.run();
-                    }}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-[14px] font-semibold text-ink-900">{cmd.title}</span>
-                      <span className="block truncate text-[12px] text-ink-900/45">{cmd.description}</span>
-                    </span>
-                    {cmd.shortcut ? (
-                      <span className="shrink-0 rounded border border-ink-900/10 bg-white px-1.5 py-0.5 text-[10px] font-semibold text-ink-900/45">
-                        {cmd.shortcut}
-                      </span>
-                    ) : null}
-                  </button>
-                ))
-              )}
-            </div>
-            <div className="border-t border-ink-900/8 px-3 py-2 text-[11px] text-ink-900/40">
-              Enter 실행 · Esc 닫기 · Ctrl+K / Ctrl+P 열기
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <CommandPalette
+        open={commandPaletteOpen}
+        query={commandQuery}
+        onQueryChange={setCommandQuery}
+        filteredCommands={filteredAppCommands}
+        inputRef={commandInputRef}
+        onClose={() => setCommandPaletteOpen(false)}
+        onRun={(cmd) => {
+          setCommandPaletteOpen(false);
+          setCommandQuery("");
+          cmd.run();
+        }}
+      />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div
@@ -3936,159 +3576,22 @@ export function MemoWorkbench({
           </button>
         ) : null}
 
-        {/* 폴더/노트/빈 영역 우클릭 컨텍스트 메뉴 */}
-        {contextMenu ? (
-          <div
-            id="tree-context-menu"
-            className="fixed z-50 min-w-[180px] overflow-hidden rounded-md border border-ink-900/15 bg-white py-1 text-[13px] shadow-lg"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            {contextMenu.kind === "blank" ? (
-              <>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    setContextMenu(null);
-                    void handleNewNoteIn(null);
-                  }}
-                >
-                  새 노트
-                </button>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    setContextMenu(null);
-                    beginCreateFolder(null);
-                  }}
-                >
-                  새 폴더
-                </button>
-              </>
-            ) : contextMenu.kind === "folder" ? (
-              <>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    void handleNewNoteIn(target.id);
-                  }}
-                >
-                  이 폴더에 새 노트
-                </button>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    beginCreateFolder(target.id);
-                  }}
-                >
-                  새 하위 폴더
-                </button>
-                <div className="my-1 h-px bg-ink-900/10" />
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    beginRename("folder", target.id);
-                  }}
-                >
-                  이름 변경
-                </button>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    void handleDeleteFolder(target.id);
-                  }}
-                >
-                  폴더 삭제
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left hover:bg-black/5"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    beginRename("note", target.id);
-                  }}
-                >
-                  이름 변경
-                </button>
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
-                  onClick={() => {
-                    const target = contextMenu;
-                    setContextMenu(null);
-                    void handleNoteContextDelete(target.id);
-                  }}
-                >
-                  삭제
-                </button>
-              </>
-            )}
-          </div>
-        ) : null}
+        <ContextMenu
+          target={contextMenu}
+          onClose={() => setContextMenu(null)}
+          onNewRootNote={() => void handleNewNoteIn(null)}
+          onNewRootFolder={() => beginCreateFolder(null)}
+          onNewNoteIn={(id) => void handleNewNoteIn(id)}
+          onNewSubfolder={(id) => beginCreateFolder(id)}
+          onRenameFolder={(id) => beginRename("folder", id)}
+          onDeleteFolder={(id) => void handleDeleteFolder(id)}
+          onRenameNote={(id) => beginRename("note", id)}
+          onDeleteNote={(id) => void handleNoteContextDelete(id)}
+        />
 
-        {hoverMeta ? (
-          <div
-            className="pointer-events-none fixed z-[60] max-w-[280px] rounded-md border border-ink-900/20 bg-white/95 px-2.5 py-2 text-[12px] text-ink-900 shadow-lg backdrop-blur"
-            style={{ left: hoverMeta.x + 14, top: hoverMeta.y + 14 }}
-          >
-            <p className="mb-1 truncate font-semibold">{hoverMeta.label}</p>
-            {hoverMeta.kind === "folder" ? (
-              <>
-                <p className="text-ink-900/70">하위 폴더: {hoverMeta.folderCount ?? 0}개</p>
-                <p className="text-ink-900/70">파일: {hoverMeta.noteCount ?? 0}개</p>
-              </>
-            ) : (
-              <>
-                <p className="text-ink-900/70">생성: {formatDateTime(hoverMeta.createdAt)}</p>
-                <p className="text-ink-900/70">수정: {formatDateTime(hoverMeta.updatedAt)}</p>
-              </>
-            )}
-          </div>
-        ) : null}
+        <HoverTooltip meta={hoverMeta} />
 
-        {confirmDialog ? (
-          <div className="fixed inset-0 z-[80] grid place-items-center bg-black/30 p-4">
-            <div className="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl ring-1 ring-ink-900/15">
-              <h3 className="text-[15px] font-semibold text-ink-900">{confirmDialog.title}</h3>
-              <p className="mt-2 whitespace-pre-line text-[13px] text-ink-900/75">
-                {confirmDialog.message}
-              </p>
-              <div className="mt-4 flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="rounded-md border border-ink-900/20 px-3 py-1.5 text-[12px] text-ink-900/75 hover:bg-black/5"
-                  onClick={() => closeConfirm(false)}
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md bg-red-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-red-700"
-                  onClick={() => closeConfirm(true)}
-                >
-                  {confirmDialog.confirmLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        <ConfirmDialog state={confirmDialog} onResolve={closeConfirm} />
       </div>
 
       <nav className="hidden">

@@ -20,12 +20,10 @@
 2. **명령 팔레트 + 슬래시 커맨드**
    - 명령 팔레트: `Ctrl+K` / `Ctrl+P` 로 앱 명령 실행.
    - 슬래시 커맨드: 본문에서 `/` 로 체크리스트, 이미지, 그림, 제목 등을 삽입.
-3. **위키링크 생성 흐름 전면 재설계** *(현재 회귀 — §11 참고)*
-   - 자동완성 메뉴 + Space 확정 조합이 cursor 동기화/렌더 시점에서 계속 어긋난다.
-   - 라인 단위 hybrid decoration + 메뉴 React state 의 조합으로는 한계가 보여서,
-     CodeMirror autocomplete 확장 + StateField pending mark 같은 다른 축으로
-     처음부터 다시 설계할 것.
-   - 백링크 패널은 위키링크가 안정화된 다음 단계.
+3. **위키링크 백링크 패널**
+   - 본문 위키링크 자동완성은 `wikilinkExtension.ts` (CodeMirror autocomplete 기반)
+     으로 재설계 완료. 다음 단계는 노트별 backlinks 패널 / "이 노트를 참조하는 노트"
+     집계 / 깨진 링크 표시.
 4. **데일리 노트**
    - 오늘 날짜 노트를 빠르게 열고, 날짜 링크/캘린더 기능의 기반으로 사용.
 5. **노트 리스트 정렬 옵션**
@@ -242,19 +240,15 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 
 지금 코드에 들어가 있지만 동작이 어긋나서 원점에서 다시 손봐야 하는 항목들.
 
-- [ ] **위키링크 생성 흐름 전면 재설계**
-  - 증상
-    - 메뉴에서 기존 노트를 고르면 캐럿이 본문 맨 앞으로 튀거나, 링크가 raw
-      상태를 거치지 않고 바로 렌더되는 등 케이스마다 동작이 다름.
-    - "닫는 괄호를 일부러 빼고 Space 로 확정" 같은 우회는 임시 방편이고
-      설계 자체가 cursor 동기화에 취약함.
-  - 방향 후보
-    - CodeMirror 표준 `autocomplete` 확장으로 메뉴를 옮긴다 (React state 와의
-      교차를 줄이고, 선택 시 dispatch / cursor 처리를 라이브러리에 맡긴다).
-    - "pending wikilink" 를 `StateField` 로 들고 가서 decoration 결정을
-      라인 텍스트가 아니라 그 마크 기준으로 한다.
-    - 신규 노트 생성은 별도 트랜잭션으로 분리하고, 본문 doc 변경은 그 결과를
-      반영만 하도록 단방향화.
+- [x] **위키링크 생성 흐름 전면 재설계** *(완료, `wikilinkExtension.ts`)*
+  - 처리: React state 기반 메뉴 / Space 확정 keymap / `replaceWikilink` 우회
+    제거. CodeMirror `@codemirror/autocomplete` 확장으로 옮겨, completion 의
+    `apply` 가 한 transaction 으로 `[[Title]] ` (트레일링 스페이스 포함) 를 박고
+    selection 을 그 뒤로 옮긴다 → cursor desync 가 구조적으로 사라짐.
+  - 신규 노트 생성은 같은 `apply` 안에서 본문 dispatch 직후 별도 콜백으로 분리,
+    본문 doc 은 단방향으로만 갱신.
+  - 활성 줄 위젯 규칙도 단순화: "캐럿/선택이 링크 범위 안이면 raw, 아니면 위젯".
+    트레일링 스페이스 신호는 더 이상 보지 않음.
 - [ ] **숫자만으로 된 노트 제목 저장 안 됨**
   - 증상: 새 노트 생성 후 제목 입력란에 `1234` 같이 숫자만 입력하면 그대로
     씹혀서 저장이 되지 않고 계속 "무제 노트" 로 남음.
@@ -276,13 +270,20 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 
 ## 12. 기술 부채 / 리팩토링
 
-- [ ] **`Workbench.tsx` 4000줄 → 다시 모듈 분리**
+- [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1차 분리 완료)*
   - 이전 라운드에서 한 번 쪼갰지만, 위키링크/슬래시 메뉴/그림 레이어/오디오/
     이미지 블록/멀티선택/명령 팔레트 등이 추가되면서 다시 4000줄을 넘김.
-  - 분리 후보 (한 PR 에 다 하지 말고 단계별로)
+  - 1차 진행 결과 (이번 작업)
+    - 타입/순수 헬퍼 분리: `workbenchTypes.ts` (Panel/ListMode/SlashMenuState/
+      ContextMenuTarget/HoverMeta/ConfirmDialogState/AppCommand 등),
+      `workbenchHelpers.ts` (overlaySignature/todayNoteTitle/extractTodoItems).
+    - 독립 오버레이 UI 분리: `CommandPalette.tsx`, `WorkbenchOverlays.tsx`
+      (ContextMenu/HoverTooltip/ConfirmDialog).
+    - 위키링크 React state + JSX 메뉴 + 키보드 effect 제거 → `wikilinkExtension.ts`.
+    - 결과: `Workbench.tsx` ≈3856줄 → ≈3620줄.
+  - 다음 단계 후보
     - **사이드바**: 트리 / 검색 / 멀티선택 / 드래그 앤 드롭 → `WorkbenchSidebar.tsx`
-    - **에디터 메뉴 훅들**: 슬래시 메뉴, 위키링크 메뉴, 명령 팔레트 → `useEditorMenus.ts`
-      (또는 메뉴별 파일)
+    - **에디터 메뉴 훅들**: 슬래시 메뉴, 명령 팔레트 hook → `useEditorMenus.ts`
     - **미디어 toolbar**: 이미지/오디오/그림 토글 → `EditorMediaToolbar.tsx`
     - **본문 직렬화**: 마커 ↔ CodeMirror doc 변환 / paste 처리 → `editorPayload.ts`
   - 분리하면서 props drilling 보다 `EditorContext` 같은 가벼운 컨텍스트로
@@ -296,4 +297,8 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 - 2026-05-08: 위키링크 1차 구현이 cursor desync / 렌더 시점 문제로 회귀로 분류,
   §11 신설. 숫자 제목 저장 안 됨 / 인라인 이미지 해상도 / `Workbench.tsx` 분리
   필요 항목을 §11~§12 에 정리.
+- 2026-05-10: `Workbench.tsx` 1차 분리 (`workbenchTypes`, `workbenchHelpers`,
+  `CommandPalette`, `WorkbenchOverlays`) + 위키링크 자동완성 재설계
+  (`wikilinkExtension`, CodeMirror autocomplete 기반) 완료. §11 위키링크 항목과
+  §0 우선순위에서 위키링크 재설계 항목을 닫고, 다음 단계는 backlinks 패널.
 - 항목을 추가/소진할 때마다 가능하면 같은 PR 안에서 이 파일도 같이 갱신.
