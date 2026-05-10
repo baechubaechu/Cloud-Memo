@@ -69,3 +69,23 @@ export type AppCommand = {
   disabled?: boolean;
   run: () => void;
 };
+
+/**
+ * 사이드바 트리에서 드래그 중인 항목. dragstart 시 dataTransfer 에 박는 mime
+ * (DND_MIME_NOTE / DND_MIME_NOTE_MULTI / DND_MIME_FOLDER) 와 별개로, 컴포넌트
+ * 내부 상태로도 들고 다녀서 dragover / drop 핸들러가 즉시 동기 판단을 할 수
+ * 있게 한다.
+ */
+export type DragItem =
+  | { kind: "folder"; id: string }
+  | { kind: "note"; id: string }
+  | { kind: "note-multi"; ids: string[] };
+
+/** 사이드바 인라인 새 폴더 생성 상태. parentId=null 이면 루트. */
+export type CreatingFolderState = { parentId: string | null; draft: string } | null;
+
+/** 사이드바 인라인 이름 변경(폴더/노트 통합) 상태. */
+export type RenamingState = { kind: "folder" | "note"; id: string; draft: string } | null;
+
+/** 노트 다중선택의 anchor 추적 (Shift 범위 선택의 기준점). */
+export type SelectionAnchor = { noteId: string; folderId: string | null } | null;
