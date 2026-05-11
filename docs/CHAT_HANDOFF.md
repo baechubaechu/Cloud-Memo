@@ -7,7 +7,7 @@
 
 - **경로:** `C:\Users\user\CloudMemo` (이전: `.cursor\projects\empty-window\cloud-memo` 에서 이동)
 - **브랜치:** `feat/phase1-multimedia-blocks`
-- **마지막 커밋 (에디터 셸 분리):** `b21defb` — `refactor(memo): extract WorkbenchEditor from Workbench`
+- **마지막 커밋 (에디터 셸 분리):** `ca1f5a2` — `refactor(memo): extract WorkbenchEditor from Workbench`
 
 ## 이 채팅에서 다룬 큰 줄기
 
