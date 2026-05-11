@@ -1,9 +1,6 @@
 import { EditorView } from "@codemirror/view";
-import {
-  invokeInsertFile,
-  isLastDocCursorExplicit,
-  syncCursorFromView,
-} from "./editorGlobals";
+import { getMemoEditorContext } from "./editorContext";
+import { isLastDocCursorExplicit, syncCursorFromView } from "./editorGlobals";
 
 function collectFilesFromTransfer(dt: DataTransfer | null): File[] {
   if (!dt) return [];
@@ -30,7 +27,9 @@ export const editorMediaInputHandlers = EditorView.domEventHandlers({
     ev.preventDefault();
     ev.stopPropagation();
     syncCursorFromView(view, true);
-    for (const f of files) invokeInsertFile(f);
+    const ctx = getMemoEditorContext(view);
+    if (!ctx) return true;
+    for (const f of files) ctx.insertFile(f);
     return true;
   },
   dragover(ev) {
@@ -57,7 +56,9 @@ export const editorMediaInputHandlers = EditorView.domEventHandlers({
         syncCursorFromView(view, true);
       }
     }
-    for (const f of files) invokeInsertFile(f);
+    const ctxDrop = getMemoEditorContext(view);
+    if (!ctxDrop) return true;
+    for (const f of files) ctxDrop.insertFile(f);
     return true;
   },
 });

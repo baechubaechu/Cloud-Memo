@@ -4,14 +4,17 @@
  */
 
 export {
-  setEditorAuthContext,
-  setEditorInsertFile,
-  setEditorNavigateLink,
   getLastDocCursor,
   isLastDocCursorExplicit,
   resetLastDocCursor,
 } from "./editorGlobals";
-export type { EditorAuthContext } from "./editorGlobals";
+
+export type { MemoEditorContext } from "./editorContext";
+export {
+  memoEditorContextExtension,
+  getMemoEditorContext,
+  createMemoEditorExtensions,
+} from "./editorContext";
 
 export { editorCursorTracker, editorCursorBackupSync } from "./editorCursor";
 

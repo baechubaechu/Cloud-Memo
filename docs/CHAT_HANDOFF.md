@@ -18,8 +18,8 @@
   3. 우측 패널 → `WorkbenchRightPanel.tsx` ✓
   4. 에디터 쉘 → `WorkbenchEditor.tsx` (`WorkbenchEditorCard`) ✓ (2026-05-11)
   5. `editor.ts` 기능별 분할(10개 모듈 + `editor.ts` 재export) ✓ (2026-05-11)
-  6. **다음:** 전역 슬롯 → `createMemoEditorExtensions({ ... })` factory 의존성 주입 (§12)
-- **장기:** `editor.ts` 전역 슬롯(`__authCtx` 등) 제거, `createMemoEditorExtensions({ ... })` 형태 **factory 의존성 주입** — Workbench 분리 이후 2차 정리로 로드맵에 적어둠.
+  6. 전역 슬롯 제거 → CodeMirror **Facet** (`editorContext.ts` + `memoEditorContextExtension`) 으로 주입 완료 (2026-05-11). 선택 후속: `createMemoEditorExtensions` 로 확장만 묶기.
+- **로드맵:** 본문은 역할별로 분리됨. 짧게 볼 때 [`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md) → 인덱스 [`ROADMAP.md`](./ROADMAP.md).
 
 ## 주요 파일 위치 (프런트)
 

@@ -6,7 +6,7 @@ import {
   renderMarkdownLineHtml,
 } from "./markdown";
 import { hydrateAttachmentsIn, hydrateWikilinksIn } from "./editorHydrate";
-import { invokeNavigateLink } from "./editorGlobals";
+import { getMemoEditorContext } from "./editorContext";
 
 export function applyInlineHighlight(text: HTMLElement, from: number, to: number): void {
   if (to <= from) return;
@@ -99,7 +99,7 @@ export class WikilinkInlineWidget extends WidgetType {
   eq(other: WikilinkInlineWidget): boolean {
     return this.title === other.title;
   }
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const a = document.createElement("a");
     a.href = "#";
     a.textContent = this.title;
@@ -113,7 +113,7 @@ export class WikilinkInlineWidget extends WidgetType {
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      invokeNavigateLink(this.title);
+      getMemoEditorContext(view)?.navigateLink(this.title);
     });
     return a;
   }
@@ -156,7 +156,7 @@ export class RenderedMarkdownLineWidget extends WidgetType {
     text.innerHTML = renderMarkdownLineHtml(this.rawLine);
     el.appendChild(text);
     hydrateAttachmentsIn(text, view, this.rawLine, this.lineFrom);
-    hydrateWikilinksIn(text);
+    hydrateWikilinksIn(text, view);
     const checklist = parseChecklistLine(this.rawLine);
     if (checklist) {
       const toggle = text.querySelector<HTMLElement>("[data-checklist-toggle]");

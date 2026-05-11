@@ -18,10 +18,8 @@ import {
   getLastDocCursor,
   hybridMarkdownField,
   isLastDocCursorExplicit,
+  memoEditorContextExtension,
   resetLastDocCursor,
-  setEditorAuthContext,
-  setEditorInsertFile,
-  setEditorNavigateLink,
 } from "./editor";
 import {
   REASON_LABEL,
@@ -184,6 +182,9 @@ export function MemoWorkbench({
   // 슬래시 메뉴 업데이트 함수의 최신 closure 를 CodeMirror 확장에서 호출하기 위한 ref.
   // (React onChange 에만 의존하면 일부 입력에서 누락되는 케이스가 있어 직접 listener 로 옮긴다.)
   const updateSlashMenuRef = useRef<(view: EditorView) => void>(() => {});
+  // Facet 컨텍스트의 insert/navigate 는 확장이 안정적이어야 하므로, 최신 구현은 ref 로 전달.
+  const memoEditorInsertFileRef = useRef<(file: File) => void>(() => {});
+  const memoEditorNavigateLinkRef = useRef<(title: string) => void>(() => {});
   // 위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장이
   // 직접 들고 있다. 메뉴 상태 / 키보드 선택 / DOM 좌표 추적 모두 CodeMirror 가
   // 관리하므로 React state 는 두지 않는다.
@@ -305,16 +306,6 @@ export function MemoWorkbench({
     void refreshMeta();
     void refreshUsage();
   }, [refreshMeta, refreshUsage]);
-
-  // 에디터 내부 위젯이 첨부를 인증된 blob URL 로 hydrate 할 수 있도록
-  // 모듈 전역에 토큰/api URL 을 주입한다. useEffect 는 첫 paint 이후라
-  // 페이지 첫 로드 시 widget 의 첫 render 가 토큰 없이 동작하는 문제가 있어,
-  // render 동안에도 동기적으로 한번 호출해 둔다 (모듈 전역 변수만 갱신하므로 안전).
-  setEditorAuthContext({ token, apiUrl: api.API_URL });
-  useEffect(() => {
-    setEditorAuthContext({ token, apiUrl: api.API_URL });
-    return () => setEditorAuthContext(null);
-  }, [token]);
 
   // 페이지를 떠나면 진행 중인 녹음 스트림을 반드시 정리.
   useEffect(() => {
@@ -1365,15 +1356,6 @@ export function MemoWorkbench({
     }
   }
 
-  // CodeMirror paste/drop 확장이 항상 최신 uploadAndInsert (= activeNoteId/token
-  // 클로저) 를 호출하도록 매 렌더마다 모듈 전역 슬롯을 갱신한다.
-  useEffect(() => {
-    setEditorInsertFile((file) => void uploadAndInsert(file));
-  });
-  useEffect(() => {
-    return () => setEditorInsertFile(null);
-  }, []);
-
   async function startAudioRecording() {
     if (isRecording) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -1616,14 +1598,19 @@ export function MemoWorkbench({
     [handleApiError, loadNote, notes, reloadNotes, token],
   );
 
-  // CodeMirror 위젯이 항상 최신 navigateToWikilink (= notes/token 클로저) 를 호출
-  // 하도록 매 렌더마다 모듈 전역 슬롯을 갱신한다. setEditorInsertFile 과 같은 패턴.
-  useEffect(() => {
-    setEditorNavigateLink((title) => void navigateToWikilink(title));
-  });
-  useEffect(() => {
-    return () => setEditorNavigateLink(null);
-  }, []);
+  memoEditorInsertFileRef.current = (file) => void uploadAndInsert(file);
+  memoEditorNavigateLinkRef.current = (title) => void navigateToWikilink(title);
+
+  const memoEditorContextExt = useMemo(
+    () =>
+      memoEditorContextExtension({
+        token,
+        apiUrl: api.API_URL,
+        insertFile: (file) => memoEditorInsertFileRef.current(file),
+        navigateLink: (title) => memoEditorNavigateLinkRef.current(title),
+      }),
+    [token],
+  );
 
   // 위키링크 autocomplete 확장은 한 번만 구성한다. notes 가 바뀔 때마다 확장을
   // 새로 만들면 CodeMirror 가 reconfig 를 일으켜 무겁고, autocomplete 메뉴가
@@ -1647,6 +1634,7 @@ export function MemoWorkbench({
 
   const codeMirrorExtensions = useMemo(
     () => [
+      memoEditorContextExt,
       markdown({ base: markdownLanguage, codeLanguages: languages }),
       hybridMarkdownField,
       EditorView.lineWrapping,
@@ -1662,7 +1650,7 @@ export function MemoWorkbench({
       slashMenuExtension,
       wikilinkExt,
     ],
-    [slashMenuExtension, wikilinkExt],
+    [memoEditorContextExt, slashMenuExtension, wikilinkExt],
   );
 
   // ---------- Render ----------

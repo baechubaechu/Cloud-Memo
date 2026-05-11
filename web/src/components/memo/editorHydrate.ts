@@ -4,16 +4,20 @@ import {
   parseAttachmentLine,
   serializeAttachmentMarker,
 } from "./markdown";
-import { getEditorAuthContext, invokeNavigateLink } from "./editorGlobals";
+import { getMemoEditorContext } from "./editorContext";
 import { removeWholeAttachmentLine } from "./editorAttachmentLine";
 
 const __blobCache = new Map<string, string>();
 
-function getBlobUrlFor(kind: "image" | "audio" | "file", attId: string): Promise<string | null> {
+function getBlobUrlFor(
+  view: EditorView,
+  kind: "image" | "audio" | "file",
+  attId: string,
+): Promise<string | null> {
   const key = `${kind}:${attId}`;
   const cached = __blobCache.get(key);
   if (cached) return Promise.resolve(cached);
-  const ctx = getEditorAuthContext();
+  const ctx = getMemoEditorContext(view);
   if (!ctx) return Promise.resolve(null);
   const url =
     kind === "image"
@@ -201,7 +205,7 @@ export function hydrateAttachmentsIn(
         window.addEventListener("mouseup", onUp);
       });
 
-      void getBlobUrlFor("image", id).then((u) => {
+      void getBlobUrlFor(view, "image", id).then((u) => {
         if (u) img.src = u;
       });
       outer.append(img, toolbar, removeBtn, handle);
@@ -220,7 +224,7 @@ export function hydrateAttachmentsIn(
       audio.style.verticalAlign = "middle";
       const cap = document.createElement("span");
       cap.textContent = label || "음성";
-      void getBlobUrlFor("audio", id).then((u) => {
+      void getBlobUrlFor(view, "audio", id).then((u) => {
         if (u) audio.src = u;
       });
       wrap.append(icon, audio, cap);
@@ -233,7 +237,7 @@ export function hydrateAttachmentsIn(
       a.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        void getBlobUrlFor("file", id).then((u) => {
+        void getBlobUrlFor(view, "file", id).then((u) => {
           if (!u) return;
           const w = window.open(u, "_blank", "noopener,noreferrer");
           if (!w) window.location.assign(u);
@@ -244,7 +248,7 @@ export function hydrateAttachmentsIn(
   }
 }
 
-export function hydrateWikilinksIn(root: HTMLElement): void {
+export function hydrateWikilinksIn(root: HTMLElement, view: EditorView): void {
   const links = Array.from(root.querySelectorAll<HTMLElement>("a[data-link]"));
   for (const link of links) {
     const title = (link.getAttribute("data-link") || "").trim();
@@ -258,7 +262,7 @@ export function hydrateWikilinksIn(root: HTMLElement): void {
     link.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      invokeNavigateLink(title);
+      getMemoEditorContext(view)?.navigateLink(title);
     });
   }
 }
