@@ -270,7 +270,7 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 
 ## 12. 기술 부채 / 리팩토링
 
-- [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1·2·3차 분리 완료, 계속 진행)*
+- [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1·2·3·4차 분리 완료, `editor.ts` 쪽 남음)*
   - 이전 라운드에서 한 번 쪼갰지만, 위키링크/슬래시 메뉴/그림 레이어/오디오/
     이미지 블록/멀티선택/명령 팔레트 등이 추가되면서 다시 4000줄을 넘김.
   - 1차 결과 (`3879090`)
@@ -297,18 +297,20 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
     - `Workbench.tsx` 에서 더 이상 안 쓰이는 import 제거
       (`AppCommand`, `IconX`, `AuthenticatedImagePreview`).
     - 결과: `Workbench.tsx` ≈3028줄 → ≈2551줄.
+  - 4차 결과
+    - 메모 편집 영역 전체 → `WorkbenchEditor.tsx` (`WorkbenchEditorCard`).
+      빈 상태 / 휴지통 복원 화면 / 메타·미디어·그리기 툴바 / 제목·태그 /
+      CodeMirror · 슬래시 메뉴 오버레이 · `OverlayDrawingLayer`.
+    - CodeMirror `extensions` 배열은 `useMemo` 로 `codeMirrorExtensions` 로 묶어
+      자식에 넘김 (동작 동일).
+    - 결과: `Workbench.tsx` ≈2551줄 → ≈2136줄 (신규 `WorkbenchEditor.tsx` ≈600줄).
   - 다음 단계 (남은 추천 순서)
-    1. `Workbench.tsx` 추가 UI 덩어리 분리.
-       - **에디터 쉘** (제목 input + 그리기 toolbar + 미디어 toolbar +
-         CodeMirror 호스팅) → `WorkbenchEditor.tsx`. 가장 큰 덩어리이고
-         이미지 paste/drop, drawing overlay, autocomplete 컨텍스트 등
-         결합도가 높아서 별도 라운드로 처리.
-    2. `editor.ts` 를 기능별 파일로 쪼갠다 (한 파일이 1400줄로 또 비대).
+    1. `editor.ts` 를 기능별 파일로 쪼갠다 (한 파일이 1400줄로 또 비대).
        - `editorWidgets.ts` (Checklist / Quote / Wikilink / RenderedLine 위젯).
        - `editorMedia.ts` (paste / drop / dragover / blob hydrate).
        - `editorKeymaps.ts` (Nav+Delete / Quote Enter / Undo / Checklist auto).
        - `editorDecorations.ts` (`hybridMarkdownField`, `buildHybridDecorations`).
-    3. 마지막에 `createMemoEditorExtensions(...)` factory 로 묶어서
+    2. 마지막에 `createMemoEditorExtensions(...)` factory 로 묶어서
        `editor.ts` 의 모듈 전역 슬롯 (`__authCtx`, `__insertFile`, `__navigateLink`)
        을 인스턴스별 의존성 주입으로 교체.
        - 동기: 지금은 에디터가 사실상 한 개라 잘 동작하지만, 미리보기 / 분할
@@ -319,7 +321,7 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
          createMemoEditorExtensions({ authCtx, insertFile, navigateLink })
          ```
          → 호출자가 인스턴스마다 의존성을 명시적으로 넘긴다.
-       - 이 단계는 위 1·2 가 끝난 뒤에 한다 (지금 손대면 영향 범위가 너무 큼).
+       - 이 단계는 `editor.ts` 분할 후에 한다 (지금 손대면 영향 범위가 너무 큼).
   - 분리하면서 props drilling 보다 `EditorContext` 같은 가벼운 컨텍스트로
     상태 공유 범위를 줄이는 것을 같이 검토.
 
@@ -342,4 +344,7 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
   (모바일 정리/목록 카드), `workbenchCommands.ts` (명령 팔레트·슬래시 커맨드
   정의), `WorkbenchRightPanel.tsx` (첨부/할 일/버전). `Workbench.tsx`
   ≈3028 → ≈2551줄. 다음 단계는 에디터 쉘 (`WorkbenchEditor.tsx`).
+- 2026-05-11: `Workbench.tsx` 4차 분리 → `WorkbenchEditor.tsx` (편집 셸 전체).
+  `Workbench.tsx` ≈2551 → ≈2136줄. 다음은 §12 의 `editor.ts` 파일 분할 +
+  factory 의존성 주입.
 - 항목을 추가/소진할 때마다 가능하면 같은 PR 안에서 이 파일도 같이 갱신.

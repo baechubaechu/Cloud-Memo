@@ -1,32 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import CodeMirror from "@uiw/react-codemirror";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { EditorView } from "@codemirror/view";
-import {
-  IconArchive,
-  IconBrush,
-  IconClock,
-  IconEraser,
-  IconFile,
-  IconHighlighter,
-  IconImage,
-  IconList,
-  IconLogOut,
-  IconMic,
-  IconMusic,
-  IconPaperclip,
-  IconPlus,
-  IconRedo,
-  IconSave,
-  IconSidebarToggle,
-  IconStar,
-  IconStop,
-  IconTrash,
-  IconUndo,
-} from "./Icons";
+import { IconArchive, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
 import {
   cmEditorVisualTheme,
   editorChecklistAutoTrigger,
@@ -63,7 +41,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ReactElement,
 } from "react";
 
 import type {
@@ -78,11 +55,7 @@ import type {
   Tag,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
-import {
-  OverlayDrawingLayer,
-  type OverlayDrawingLayerHandle,
-  type OverlayDrawingTool,
-} from "./OverlayDrawingLayer";
+import { type OverlayDrawingLayerHandle, type OverlayDrawingTool } from "./OverlayDrawingLayer";
 import { parseChecklistLine } from "./markdown";
 import type {
   ConfirmDialogState,
@@ -103,6 +76,7 @@ import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
 import { MobileListCard, MobileNavCard } from "./WorkbenchMobilePanels";
 import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
+import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
 
@@ -1671,6 +1645,26 @@ export function MemoWorkbench({
     [],
   );
 
+  const codeMirrorExtensions = useMemo(
+    () => [
+      markdown({ base: markdownLanguage, codeLanguages: languages }),
+      hybridMarkdownField,
+      EditorView.lineWrapping,
+      cmEditorVisualTheme,
+      editorMouseHandlers,
+      editorMediaInputHandlers,
+      editorCursorTracker,
+      editorCursorBackupSync,
+      editorChecklistAutoTrigger,
+      editorUndoRedoKeymap,
+      editorQuoteEnterKeymap,
+      editorNavAndDeleteKeymap,
+      slashMenuExtension,
+      wikilinkExt,
+    ],
+    [slashMenuExtension, wikilinkExt],
+  );
+
   // ---------- Render ----------
 
   const navCard = (
@@ -1943,488 +1937,79 @@ export function MemoWorkbench({
     />
   );
 
-  let editorCard: ReactElement;
-  if (!activeNote) {
-    editorCard = (
-      <section className="grid h-full place-items-center px-6 py-12 text-center">
-        <div className="max-w-sm space-y-3 rounded-2xl bg-white p-8 shadow-pane ring-1 ring-ink-900/10">
-          <p className="text-xs uppercase tracking-[0.3em] text-ink-900/35">시작</p>
-          <p className="text-lg font-semibold text-ink-900">메모를 선택하거나 새로 만들어 보세요.</p>
-          <p className="text-sm text-ink-900/60">사이드바에서 폴더·태그를 정리하면 흐름이 유지됩니다.</p>
-          <button type="button" className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white" onClick={handleNewNote}>
-            새 노트 만들기
-          </button>
-        </div>
-      </section>
-    );
-  } else if (activeNote.deleted_at) {
-    editorCard = (
-      <section className="flex h-full items-center justify-center p-10 text-center text-sm text-ink-900/65">
-        <div className="max-w-xs space-y-3 rounded-2xl bg-white p-8 shadow-pane ring-1 ring-ink-900/10">
-          <p>이 노트는 휴지통에 있습니다. 내용은 유지되지만 편집하려면 복원해야 합니다.</p>
-          <button
-            type="button"
-            className="rounded-full bg-emerald-600 px-5 py-2 text-xs font-semibold text-white shadow"
-            onClick={() => void restoreActiveNote()}
-          >
-            복원하고 편집
-          </button>
-        </div>
-      </section>
-    );
-  } else {
-    editorCard = (
-      <section className="flex h-full min-h-0 flex-col bg-white">
-        {/* 옵시디언풍 작은 메타 툴바 */}
-        <div className="flex h-9 items-center gap-2 border-b border-ink-900/10 bg-[#fafaf9] px-3 text-[12px] text-ink-900/65">
-          <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-              saveState === "dirty"
-                ? "bg-amber-100 text-amber-800"
-                : saveState === "saving"
-                  ? "bg-sky-100 text-sky-900"
-                  : "bg-emerald-100 text-emerald-800"
-            }`}
-          >
-            {saveState === "dirty" ? "편집 중" : saveState === "saving" ? "저장 중" : "저장됨"}
-          </span>
-          <select
-            value={activeNote.folder_id ?? ""}
-            onChange={handleMoveNoteFolder}
-            aria-label="폴더 배치"
-            className="h-6 rounded border border-ink-900/12 bg-white/70 px-1 text-[12px]"
-          >
-            <option value="">루트</option>
-            {folderOptions.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => void toggleFavorite()}
-            title="즐겨찾기"
-            aria-label="즐겨찾기 토글"
-            className={`grid h-7 w-7 place-items-center rounded ${
-              activeNote.is_favorite ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-            }`}
-          >
-            <IconStar size={15} filled={activeNote.is_favorite} />
-          </button>
-          <button
-            type="button"
-            onClick={() => void toggleArchive()}
-            title="아카이브"
-            aria-label="아카이브 토글"
-            className={`grid h-7 w-7 place-items-center rounded ${
-              activeNote.is_archived ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-            }`}
-          >
-            <IconArchive size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleManualSnapshot()}
-            title="체크포인트"
-            aria-label="체크포인트 저장"
-            className="grid h-7 w-7 place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-          >
-            <IconSave size={15} />
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleListItemAction({ ...activeNote, tags: activeNote.tags })}
-            title="휴지통으로 이동"
-            aria-label="휴지통으로 이동"
-            className="grid h-7 w-7 place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-          >
-            <IconTrash size={15} />
-          </button>
-
-          <div className="ml-auto flex items-center gap-1">
-            {/* 본문에 미디어 인라인 삽입: 이미지 / 음성 녹음 / 오디오 / 파일 */}
-            <label
-              title="이미지 본문에 삽입"
-              aria-label="이미지 본문에 삽입"
-              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-            >
-              <IconImage size={15} />
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(ev) => {
-                  const f = ev.target.files?.[0];
-                  ev.target.value = "";
-                  if (f) void uploadAndInsert(f);
-                }}
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => (isRecording ? stopAudioRecording() : void startAudioRecording())}
-              title={isRecording ? "녹음 종료" : "음성 녹음 시작"}
-              aria-label={isRecording ? "녹음 종료" : "음성 녹음 시작"}
-              className={`grid h-7 w-7 place-items-center rounded ${
-                isRecording ? "bg-red-500 text-white animate-pulse" : "hover:bg-black/5 hover:text-ink-900"
-              }`}
-            >
-              {isRecording ? <IconStop size={15} /> : <IconMic size={15} />}
-            </button>
-            <label
-              title="오디오 파일 본문에 삽입"
-              aria-label="오디오 파일 본문에 삽입"
-              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-            >
-              <IconMusic size={15} />
-              <input
-                type="file"
-                accept="audio/*"
-                className="hidden"
-                onChange={(ev) => {
-                  const f = ev.target.files?.[0];
-                  ev.target.value = "";
-                  if (f) void uploadAndInsert(f);
-                }}
-              />
-            </label>
-            <label
-              title="일반 파일 본문에 삽입"
-              aria-label="일반 파일 본문에 삽입"
-              className="grid h-7 w-7 cursor-pointer place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-            >
-              <IconFile size={15} />
-              <input
-                type="file"
-                className="hidden"
-                onChange={(ev) => {
-                  const f = ev.target.files?.[0];
-                  ev.target.value = "";
-                  if (f) void uploadAndInsert(f);
-                }}
-              />
-            </label>
-
-            {/* 우측 패널 토글: 첨부 / 할 일 / 버전 */}
-            <span className="mx-1 h-4 w-px bg-ink-900/10" aria-hidden="true" />
-            <button
-              type="button"
-              onClick={() => setRightPanel(rightPanel === "files" ? null : "files")}
-              title="첨부 파일"
-              aria-label="첨부 파일 토글"
-              className={`grid h-7 w-7 place-items-center rounded ${
-                rightPanel === "files" ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-              }`}
-            >
-              <IconPaperclip size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setRightPanel(rightPanel === "todos" ? null : "todos")}
-              title="모든 할 일"
-              aria-label="모든 할 일 토글"
-              className={`grid h-7 w-7 place-items-center rounded ${
-                rightPanel === "todos" ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-              }`}
-            >
-              <IconList size={15} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setRightPanel(rightPanel === "versions" ? null : "versions")}
-              title="버전 히스토리"
-              aria-label="버전 히스토리 토글"
-              className={`grid h-7 w-7 place-items-center rounded ${
-                rightPanel === "versions" ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-              }`}
-            >
-              <IconClock size={15} />
-            </button>
-          </div>
-        </div>
-
-        {/* 그리기 툴바 — 메타 툴바 바로 아래의 별도 행. 본문 스크롤 영역
-            바깥에 두므로 제목/스크롤과 겹치지 않고 항상 같은 자리에 보인다. */}
-        <div className="flex items-center gap-1 border-b border-ink-900/10 bg-[#fafaf9] px-3 py-1.5">
-          <button
-            type="button"
-            onClick={() => setDrawingMode((v) => !v)}
-            title={drawingMode ? "그리기 끄기" : "본문 위에 자유 그리기"}
-            aria-pressed={drawingMode}
-            className={`grid h-7 w-7 place-items-center rounded ${
-              drawingMode ? "bg-indigo-500 text-white" : "text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-            }`}
-          >
-            <IconBrush size={15} />
-          </button>
-          {drawingMode && (
-            <>
-              <span className="mx-1 h-4 w-px bg-ink-900/15" />
-              <button
-                type="button"
-                onClick={() => setDrawingTool("pen")}
-                title="펜"
-                aria-pressed={drawingTool === "pen"}
-                className={`grid h-7 w-7 place-items-center rounded ${
-                  drawingTool === "pen" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                }`}
-              >
-                <IconBrush size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setDrawingTool("highlighter")}
-                title="형광펜"
-                aria-pressed={drawingTool === "highlighter"}
-                className={`grid h-7 w-7 place-items-center rounded ${
-                  drawingTool === "highlighter" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                }`}
-              >
-                <IconHighlighter size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setDrawingTool("eraser")}
-                title="지우개(stroke 단위)"
-                aria-pressed={drawingTool === "eraser"}
-                className={`grid h-7 w-7 place-items-center rounded ${
-                  drawingTool === "eraser" ? "bg-black/10 text-ink-900" : "text-ink-900/65 hover:bg-black/5"
-                }`}
-              >
-                <IconEraser size={15} />
-              </button>
-              <span className="mx-1 h-4 w-px bg-ink-900/15" />
-              {/* 색 swatch */}
-              {["#1f2937", "#dc2626", "#2563eb", "#16a34a", "#f59e0b"].map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setDrawingColor(c)}
-                  title={c}
-                  className={`h-5 w-5 rounded-full border ${
-                    drawingColor === c ? "border-ink-900 ring-2 ring-indigo-300" : "border-ink-900/20"
-                  }`}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-              <span className="mx-1 h-4 w-px bg-ink-900/15" />
-              <input
-                type="range"
-                min={1}
-                max={20}
-                step={0.5}
-                value={drawingWidth}
-                onChange={(ev) => setDrawingWidth(Number(ev.target.value))}
-                className="h-5 w-24"
-                title={`굵기 ${drawingWidth}px`}
-              />
-              <span className="text-[11px] tabular-nums text-ink-900/55">{drawingWidth.toFixed(1)}</span>
-              <span className="mx-1 h-4 w-px bg-ink-900/15" />
-              <button
-                type="button"
-                onClick={() => overlayHandleRef.current?.undo()}
-                title="되돌리기"
-                className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-              >
-                <IconUndo size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={() => overlayHandleRef.current?.redo()}
-                title="다시 실행"
-                className="grid h-7 w-7 place-items-center rounded text-ink-900/65 hover:bg-black/5 hover:text-ink-900"
-              >
-                <IconRedo size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (overlayStrokes.length === 0) return;
-                  const ok = await askConfirm({
-                    title: "그림 전체 삭제",
-                    message: "이 노트의 그림 레이어를 모두 지우시겠어요? 이 작업은 되돌리기로만 복구할 수 있어요.",
-                    confirmLabel: "전부 지우기",
-                  });
-                  if (!ok) return;
-                  overlayHandleRef.current?.clear();
-                }}
-                title="전부 지우기"
-                className="ml-1 rounded px-1.5 text-[11px] text-ink-900/55 hover:bg-black/5 hover:text-ink-900"
-              >
-                전부 지우기
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* 본문 */}
-        <main className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10">
-          {/* 본문 컨텐츠 + 그림 레이어를 같은 positioning context 에 둔다.
-              그래야 absolute layer 가 본문과 함께 스크롤되고, 본문 폭에 정확히
-              겹친다. */}
-          <div className="relative">
-          <input
-            ref={titleInputRef}
-            className="mx-auto block w-full max-w-3xl border-0 bg-transparent px-0 py-2 text-3xl font-semibold tracking-tight text-ink-900 outline-none placeholder:text-ink-900/25 focus:ring-0"
-            value={title}
-            onChange={(ev) => {
-              setTitle(ev.target.value);
-              if (!composingRef.current) scheduleAutosave();
-            }}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleTitleCompositionEnd}
-            placeholder="제목"
-          />
-
-          {/* 태그 칩 행 (옵시디언 속성처럼 가볍게) */}
-          <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-1.5 pb-4 pt-1 text-[12px] text-ink-900/55">
-            {activeNote.tags.length === 0 ? (
-              <span className="text-ink-900/30">태그 없음</span>
-            ) : (
-              activeNote.tags.map((tag) => (
-                <button
-                  type="button"
-                  key={tag.id}
-                  onClick={() => void toggleTagForActive(tag, false)}
-                  title="태그 해제"
-                  className="rounded bg-sky-50 px-1.5 py-0.5 text-[11px] text-sky-800 hover:bg-sky-100"
-                >
-                  #{tag.name}
-                </button>
-              ))
-            )}
-            <details className="relative">
-              <summary className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] text-ink-900/45 hover:bg-black/5">
-                + 태그
-              </summary>
-              <div className="absolute left-0 z-30 mt-1 w-56 rounded-md border border-ink-900/15 bg-white p-2 shadow-lg">
-                <div className="flex max-h-48 flex-wrap gap-1 overflow-auto">
-                  {tags.length === 0 ? (
-                    <p className="text-[11px] text-ink-900/45">먼저 사이드바에서 태그를 만드세요.</p>
-                  ) : (
-                    tags.map((tag) => {
-                      const on = !!activeNote.tags.find((x) => x.id === tag.id);
-                      return (
-                        <button
-                          type="button"
-                          key={tag.id}
-                          onClick={() => void toggleTagForActive(tag, !on)}
-                          className={`rounded px-1.5 py-0.5 text-[11px] ${
-                            on ? "bg-ink-900 text-white" : "bg-black/5 text-ink-900/65 hover:bg-black/10"
-                          }`}
-                        >
-                          #{tag.name}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            </details>
-          </div>
-
-          <section className="relative mx-auto w-full max-w-3xl min-h-[62dvh] py-2">
-            <CodeMirror
-              value={content}
-              height="auto"
-              basicSetup={{
-                lineNumbers: false,
-                foldGutter: false,
-                dropCursor: true,
-                searchKeymap: true,
-              }}
-              extensions={[
-                markdown({ base: markdownLanguage, codeLanguages: languages }),
-                hybridMarkdownField,
-                EditorView.lineWrapping,
-                cmEditorVisualTheme,
-                editorMouseHandlers,
-                editorMediaInputHandlers,
-                editorCursorTracker,
-                editorCursorBackupSync,
-                editorChecklistAutoTrigger,
-                editorUndoRedoKeymap,
-                editorQuoteEnterKeymap,
-                editorNavAndDeleteKeymap,
-                slashMenuExtension,
-                wikilinkExt,
-              ]}
-              placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
-              onCreateEditor={(view) => {
-                editorViewRef.current = view;
-              }}
-              onChange={(value) => {
-                setContent(value);
-                if (!composingRef.current) scheduleAutosave();
-                // 슬래시 메뉴: onChange 시점에도 즉시 평가해서 갱신.
-                // (위키링크 메뉴는 CodeMirror autocomplete 가 직접 들고 있다.)
-                const view = editorViewRef.current;
-                if (view) {
-                  updateSlashMenuFromView(view);
-                }
-              }}
-              className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
-            />
-            {slashMenu && filteredSlashCommands.length > 0 ? (
-              <div
-                className="fixed z-[70] w-72 overflow-hidden rounded-xl border border-ink-900/12 bg-white text-[13px] shadow-xl"
-                style={{ left: slashMenu.x, top: slashMenu.y }}
-              >
-                <div className="border-b border-ink-900/8 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-900/40">
-                  슬래시 커맨드 · ↑↓ 이동 · Enter 실행 · Esc 닫기
-                </div>
-                <div className="max-h-72 overflow-y-auto py-1">
-                  {filteredSlashCommands.slice(0, 8).map((cmd, idx) => {
-                    const selected = idx === slashSelected;
-                    return (
-                      <button
-                        key={cmd.id}
-                        type="button"
-                        className={`block w-full px-3 py-2 text-left ${
-                          selected ? "bg-indigo-50" : "hover:bg-black/5"
-                        }`}
-                        onMouseDown={(ev) => ev.preventDefault()}
-                        onMouseEnter={() => setSlashSelected(idx)}
-                        onClick={() => cmd.run()}
-                      >
-                        <span
-                          className={`block font-semibold ${
-                            selected ? "text-indigo-700" : "text-ink-900"
-                          }`}
-                        >
-                          {cmd.title}
-                        </span>
-                        <span className="block text-[11px] text-ink-900/45">
-                          {cmd.description}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-            {/* 위키링크 자동완성 메뉴는 CodeMirror autocomplete 가 직접 그린다.
-                React JSX 오버레이로 두면 메뉴 ↔ 에디터 selection 사이의 timing
-                desync 가 잡기 어려워서 메뉴 자체의 소유권을 CodeMirror 로 옮겼다. */}
-          </section>
-          {/* 본문 위에 떠 있는 자유 그림 레이어. drawingMode 가 false 면 입력
-              이 통과돼서 텍스트 편집에 영향 없음. */}
-          <OverlayDrawingLayer
-            ref={overlayHandleRef}
-            enabled={drawingMode}
-            tool={drawingTool}
-            color={drawingColor}
-            width={drawingWidth}
-            strokes={overlayStrokes}
-            onStrokesChange={setOverlayStrokes}
-          />
-          </div>
-        </main>
-      </section>
-    );
-  }
+  const editorCard = (
+    <WorkbenchEditorCard
+      activeNote={activeNote}
+      onNewNote={handleNewNote}
+      onRestoreDeletedNote={() => void restoreActiveNote()}
+      saveState={saveState}
+      folderOptions={folderOptions}
+      onMoveNoteFolder={handleMoveNoteFolder}
+      onToggleFavorite={() => void toggleFavorite()}
+      onToggleArchive={() => void toggleArchive()}
+      onManualSnapshot={() => void handleManualSnapshot()}
+      onTrashNote={() => {
+        if (!activeNote) return;
+        void handleListItemAction({
+          id: activeNote.id,
+          title: activeNote.title,
+          folder_id: activeNote.folder_id,
+          is_favorite: activeNote.is_favorite,
+          is_archived: activeNote.is_archived,
+          created_at: activeNote.created_at,
+          updated_at: activeNote.updated_at,
+          deleted_at: activeNote.deleted_at,
+          tags: activeNote.tags,
+        });
+      }}
+      imageInputRef={imageInputRef}
+      onPickImageFile={(file) => void uploadAndInsert(file)}
+      isRecording={isRecording}
+      onToggleAudioRecording={() => {
+        if (isRecording) stopAudioRecording();
+        else void startAudioRecording();
+      }}
+      rightPanel={rightPanel}
+      setRightPanel={setRightPanel}
+      drawingMode={drawingMode}
+      setDrawingMode={setDrawingMode}
+      drawingTool={drawingTool}
+      setDrawingTool={setDrawingTool}
+      drawingColor={drawingColor}
+      setDrawingColor={setDrawingColor}
+      drawingWidth={drawingWidth}
+      setDrawingWidth={setDrawingWidth}
+      overlayHandleRef={overlayHandleRef}
+      overlayStrokes={overlayStrokes}
+      setOverlayStrokes={setOverlayStrokes}
+      askConfirm={askConfirm}
+      titleInputRef={titleInputRef}
+      title={title}
+      onTitleChange={(next) => {
+        setTitle(next);
+        if (!composingRef.current) scheduleAutosave();
+      }}
+      onTitleCompositionStart={handleCompositionStart}
+      onTitleCompositionEnd={handleTitleCompositionEnd}
+      allTags={tags}
+      onToggleTagForActive={toggleTagForActive}
+      content={content}
+      onBodyChange={(value) => {
+        setContent(value);
+        if (!composingRef.current) scheduleAutosave();
+        const view = editorViewRef.current;
+        if (view) updateSlashMenuFromView(view);
+      }}
+      codeMirrorExtensions={codeMirrorExtensions}
+      onEditorMount={(view) => {
+        editorViewRef.current = view;
+      }}
+      slashMenu={slashMenu}
+      filteredSlashCommands={filteredSlashCommands}
+      slashSelected={slashSelected}
+      setSlashSelected={setSlashSelected}
+    />
+  );
 
   // ---------- 우측 토글 패널: 첨부 / 할 일 / 버전 ----------
   const rightPanelCard =
