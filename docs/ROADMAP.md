@@ -304,13 +304,20 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
     - CodeMirror `extensions` 배열은 `useMemo` 로 `codeMirrorExtensions` 로 묶어
       자식에 넘김 (동작 동일).
     - 결과: `Workbench.tsx` ≈2551줄 → ≈2136줄 (신규 `WorkbenchEditor.tsx` ≈600줄).
+  - `editor.ts` 모듈 분할 (2026-05-11)
+    - 진입점 `editor.ts` 는 재export 전용(공개 API 유지).
+    - `editorGlobals.ts` — 전역 슬롯·문서 캐럿 (`setEditor*` / `getLastDocCursor` 등).
+    - `editorCursor.ts` — `editorCursorTracker`, `editorCursorBackupSync`.
+    - `editorAttachmentLine.ts` — 첨부 줄 판별·통째 삭제.
+    - `editorHydrate.ts` — blob URL, 첨부/위키 DOM 하이드레이션.
+    - `editorWidgets.ts` — 위젯 클래스 + `applyInlineHighlight`.
+    - `editorDecorations.ts` — `hybridMarkdownField`.
+    - `editorMediaInput.ts` — paste/drop.
+    - `editorMouseHandlers.ts` — 우측 여백 더블클릭 등.
+    - `editorKeymaps.ts` — 화살표·삭제·Enter·undo·`[]` 스페이스.
+    - `editorTheme.ts` — `cmEditorVisualTheme`.
   - 다음 단계 (남은 추천 순서)
-    1. `editor.ts` 를 기능별 파일로 쪼갠다 (한 파일이 1400줄로 또 비대).
-       - `editorWidgets.ts` (Checklist / Quote / Wikilink / RenderedLine 위젯).
-       - `editorMedia.ts` (paste / drop / dragover / blob hydrate).
-       - `editorKeymaps.ts` (Nav+Delete / Quote Enter / Undo / Checklist auto).
-       - `editorDecorations.ts` (`hybridMarkdownField`, `buildHybridDecorations`).
-    2. 마지막에 `createMemoEditorExtensions(...)` factory 로 묶어서
+    1. 마지막에 `createMemoEditorExtensions(...)` factory 로 묶어서
        `editor.ts` 의 모듈 전역 슬롯 (`__authCtx`, `__insertFile`, `__navigateLink`)
        을 인스턴스별 의존성 주입으로 교체.
        - 동기: 지금은 에디터가 사실상 한 개라 잘 동작하지만, 미리보기 / 분할
@@ -321,7 +328,8 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
          createMemoEditorExtensions({ authCtx, insertFile, navigateLink })
          ```
          → 호출자가 인스턴스마다 의존성을 명시적으로 넘긴다.
-       - 이 단계는 `editor.ts` 분할 후에 한다 (지금 손대면 영향 범위가 너무 큼).
+       - 이 단계는 전역 슬롯을 유지한 채로도 동작은 동일; factory 는 테스트·멀티
+         에디터 대비용으로 후순위.
   - 분리하면서 props drilling 보다 `EditorContext` 같은 가벼운 컨텍스트로
     상태 공유 범위를 줄이는 것을 같이 검토.
 
@@ -347,4 +355,8 @@ Phase 1 (마커 기반 인라인 첨부) 까지는 `feat/phase1-multimedia-block
 - 2026-05-11: `Workbench.tsx` 4차 분리 → `WorkbenchEditor.tsx` (편집 셸 전체).
   `Workbench.tsx` ≈2551 → ≈2136줄. 다음은 §12 의 `editor.ts` 파일 분할 +
   factory 의존성 주입.
+- 2026-05-11: `editor.ts` 단일 파일(~1410줄) → `editorGlobals` / `editorCursor` /
+  `editorAttachmentLine` / `editorHydrate` / `editorWidgets` / `editorDecorations` /
+  `editorMediaInput` / `editorMouseHandlers` / `editorKeymaps` / `editorTheme` +
+  `editor.ts` 재export 진입점. 다음은 factory 의존성 주입(전역 슬롯 제거).
 - 항목을 추가/소진할 때마다 가능하면 같은 PR 안에서 이 파일도 같이 갱신.
