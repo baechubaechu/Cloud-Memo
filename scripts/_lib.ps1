@@ -53,3 +53,54 @@ function Show-DevHostBanner {
     Write-Host "================================================="
     Write-Host ""
 }
+
+function Test-DevTcpPortOpen {
+    param([int] $Port)
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $c.ReceiveTimeout = 500
+        $c.SendTimeout = 500
+        $c.Connect("127.0.0.1", $Port)
+        $c.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Wait-MemoPostgresHealthy {
+    param(
+        [int] $TimeoutSec = 120,
+        [string] $ContainerName = "memo-postgres"
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $raw = docker inspect $ContainerName 2>$null
+        if (-not $raw) {
+            Start-Sleep -Seconds 2
+            continue
+        }
+        $j = $raw | ConvertFrom-Json
+        if (-not $j) { Start-Sleep -Seconds 2; continue }
+        $state = $j[0].State
+        if ($state.Health -and $state.Health.Status -eq "healthy") { return }
+        Start-Sleep -Seconds 2
+    }
+    throw "Docker 컨테이너 '$ContainerName' 이(가) ${TimeoutSec}s 안에 healthy 가 되지 않았습니다. Docker Desktop 과 로그를 확인하세요."
+}
+
+function Wait-DevApiHealthy {
+    param(
+        [string] $Url = "http://127.0.0.1:8000/api/health",
+        [int] $TimeoutSec = 120
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
+            if ($r.StatusCode -eq 200) { return }
+        } catch {}
+        Start-Sleep -Milliseconds 800
+    }
+    throw "API 가 응답하지 않습니다: $Url (${TimeoutSec}s 타임아웃). dev-api 창의 에러 로그를 확인하세요."
+}

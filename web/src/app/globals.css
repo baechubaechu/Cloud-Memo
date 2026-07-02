@@ -1,15 +1,8 @@
+@import url("https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/static/pretendard.min.css");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@font-face {
-  font-family: "Pretendard";
-  src: url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/woff2/PretendardVariable.woff2")
-    format("woff2");
-  font-weight: 45 920;
-  font-style: normal;
-  font-display: swap;
-}
 
 :root {
   color-scheme: light;
@@ -55,6 +48,20 @@ body {
 /* 키보드 포커스 가시성은 유지 */
 *:focus-visible {
   @apply outline outline-2 outline-offset-2 outline-sky-500/70;
+}
+
+/* 메모 제목 필드: 편집 시 칸 하이라이트 없음 (전역 focus-visible 링 제외) */
+.memo-title-input:focus,
+.memo-title-input:focus-visible {
+  outline: none !important;
+}
+
+/* 본문 CodeMirror `.memo-selection` 과 동일한 드래그 선택색 (editorTheme.ts) */
+.memo-title-input::selection {
+  background-color: #cfd0e8;
+}
+.memo-title-input::-moz-selection {
+  background-color: #cfd0e8;
 }
 
 /* 안전 영역 유틸리티 (Tailwind에 직접 박는 것보다 의미 명확) */

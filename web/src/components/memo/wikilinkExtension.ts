@@ -135,7 +135,8 @@ function buildSource(opts: WikilinkExtensionOptions) {
     if (trimmed && !exactExists) {
       const title = trimmed;
       options.push({
-        label: `+ 새 노트 “${title}”`,
+        // 직선 따옴표만 쓴다. 타이포그래픽 따옴표는 일부 글꼴에서 보조 설명 줄과 톤이 달라 보일 수 있음.
+        label: `+ 새 노트 "${title}"`,
         type: "wikilink-create",
         detail: "이 제목으로 새 노트 만들기",
         boost: NEW_NOTE_BOOST,
@@ -174,6 +175,10 @@ export function wikilinkAutocompleteExtension(opts: WikilinkExtensionOptions): E
       defaultKeymap: true,
       icons: false,
       closeOnBlur: true,
+      /** `editorTheme.ts` 의 `.memo-wikilink-completion` 스타일과 짝 */
+      tooltipClass: () => "memo-wikilink-completion",
+      optionClass: (c: Completion) =>
+        c.type === "wikilink-create" ? "memo-wikilink-completion-new" : "memo-wikilink-completion-existing",
     }),
   ];
 }

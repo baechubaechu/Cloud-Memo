@@ -80,13 +80,23 @@ docker compose up -d --build
 
 평소 작업은 Postgres 컨테이너 + 백엔드/프런트 직접 실행이 빠릅니다.
 
+**권장: 한 번에** — Docker Desktop 을 켠 뒤 레포 루트에서:
+
 ```powershell
 # 사전 준비 (1회)
-powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1   # Postgres만 띄움
 cd api;  python -m venv .venv;  .\.venv\Scripts\python -m pip install -r requirements.txt;  cd ..
 cd web;  npm install;  cd ..
 
-# 평소 (터미널 2개)
+# 평소 — Postgres 기동 → API 는 새 창 → 이 창에서 Next (:3000)
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-all.ps1
+```
+
+`dev-all.ps1` 은 `memo-postgres` 를 띄우고 healthy 될 때까지 기다린 뒤, **:8000** 이 비어 있으면 `dev-api.ps1` 을 **별도 PowerShell 창**에서 실행하고, `/api/health` 가 될 때까지 기다린 다음 **현재 창**에서 `dev-web.ps1`(Next) 을 띄웁니다. API 를 안 켠 채 웹만 열어 `Failed to fetch` 가 나는 상황을 줄이기 위한 스크립트입니다.
+
+**수동으로 나누고 싶을 때** (터미널 2개):
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1   # Postgres만 (선택)
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-api.ps1  # FastAPI :8000
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-web.ps1  # Next.js :3000
 ```
@@ -118,6 +128,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1
 
 | 스크립트 | 용도 | 예시 |
 |---|---|---|
+| `scripts/dev-all.ps1` | 로컬 풀스택: Postgres(Docker) → API(새 창) → Web(현재 창), health 대기 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-all.ps1` |
 | `scripts/deploy-vps.sh` | VPS에서 안전 점검 후 `docker compose up -d --build` 실행 | `bash ./scripts/deploy-vps.sh` |
 | `scripts/change-password.sh` | 잠금 비밀번호 변경 (docker/local/auto) | `bash ./scripts/change-password.sh --new-password "newpass"` |
 | `scripts/change-password.ps1` | 잠금 비밀번호 변경 (Windows) | `powershell -ExecutionPolicy Bypass -File .\scripts\change-password.ps1 -NewPassword "newpass"` |

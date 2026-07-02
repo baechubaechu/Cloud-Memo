@@ -94,6 +94,8 @@ export type WorkbenchEditorCardProps = {
   onTitleChange: (next: string) => void;
   onTitleCompositionStart: (ev: CompositionEvent<HTMLInputElement>) => void;
   onTitleCompositionEnd: (ev: CompositionEvent<HTMLInputElement>) => void;
+  /** 포커스가 빠질 때(예: 본문·사이드바 클릭) 디바운스 없이 저장 반영 */
+  onTitleBlur?: () => void;
 
   allTags: Tag[];
   onToggleTagForActive: (tag: Tag, nextOn: boolean) => void | Promise<void>;
@@ -144,6 +146,7 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
     onTitleChange,
     onTitleCompositionStart,
     onTitleCompositionEnd,
+    onTitleBlur,
     allTags,
     onToggleTagForActive,
     content,
@@ -162,7 +165,6 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
         <div className="max-w-sm space-y-3 rounded-2xl bg-white p-8 shadow-pane ring-1 ring-ink-900/10">
           <p className="text-xs uppercase tracking-[0.3em] text-ink-900/35">시작</p>
           <p className="text-lg font-semibold text-ink-900">메모를 선택하거나 새로 만들어 보세요.</p>
-          <p className="text-sm text-ink-900/60">사이드바에서 폴더·태그를 정리하면 흐름이 유지됩니다.</p>
           <button
             type="button"
             className="rounded-full bg-ink-900 px-5 py-2 text-sm font-semibold text-white"
@@ -477,11 +479,14 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
         <div className="relative">
           <input
             ref={titleInputRef}
-            className="mx-auto block w-full max-w-3xl border-0 bg-transparent px-0 py-2 text-3xl font-semibold tracking-tight text-ink-900 outline-none placeholder:text-ink-900/25 focus:ring-0"
+            type="text"
+            autoComplete="off"
+            className="memo-title-input mx-auto block w-full max-w-3xl border-0 bg-transparent px-0 py-2 text-3xl font-semibold tracking-tight text-ink-900 outline-none ring-0 placeholder:text-ink-900/25 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
             value={title}
             onChange={(ev) => onTitleChange(ev.target.value)}
             onCompositionStart={onTitleCompositionStart}
             onCompositionEnd={onTitleCompositionEnd}
+            onBlur={() => onTitleBlur?.()}
             placeholder="제목"
           />
 
@@ -535,6 +540,7 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
             <CodeMirror
               value={content}
               height="auto"
+              autoFocus={false}
               basicSetup={{
                 lineNumbers: false,
                 foldGutter: false,

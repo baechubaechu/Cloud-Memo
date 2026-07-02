@@ -14,7 +14,7 @@
 | 목적 | 파일 |
 |------|------|
 | **지금 할 일만** (최소 토큰) | [`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md) |
-| 제품 우선순위·편집·보내기·UX 잔여 | [`ROADMAP_PRODUCT.md`](./ROADMAP_PRODUCT.md) |
+| 제품 우선순위·편집·보내기·UX·**홈/바탕화면 위젯(Rainmeter 스타일)**·웹 검증·네이티브 앱 | [`ROADMAP_PRODUCT.md`](./ROADMAP_PRODUCT.md) |
 | Phase 2~6 미디어·블록 모델 | [`ROADMAP_PHASES.md`](./ROADMAP_PHASES.md) |
 | AI·협업·일정·인증 | [`ROADMAP_PLATFORM.md`](./ROADMAP_PLATFORM.md) |
 | 버그·회귀·리팩토링·에디터 구조 | [`ROADMAP_TECH.md`](./ROADMAP_TECH.md) |

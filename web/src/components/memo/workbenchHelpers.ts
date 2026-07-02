@@ -16,6 +16,9 @@ export function overlaySignature(strokes: OverlayStroke[]): string {
   return `${strokes.length}:${last?.id ?? ""}:${last?.points?.length ?? 0}`;
 }
 
+/** 새 노트를 만들 때 API 에 넣는 기본 제목(빈 제목 대신). 사이드바 표시 문구와 맞춘다. */
+export const DEFAULT_NEW_NOTE_TITLE = "무제 노트";
+
 /** 오늘 날짜를 `YYYY-MM-DD` 형식으로 돌려준다. 데일리 노트 제목용. */
 export function todayNoteTitle(): string {
   const d = new Date();

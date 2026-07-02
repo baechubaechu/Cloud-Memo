@@ -40,6 +40,7 @@ import {
   useState,
   type ChangeEvent,
 } from "react";
+import { flushSync } from "react-dom";
 
 import type {
   Attachment,
@@ -68,11 +69,10 @@ import type {
   TodoPanelItem,
   SlashMenuState,
 } from "./workbenchTypes";
-import { overlaySignature, todayNoteTitle, extractTodoItems } from "./workbenchHelpers";
+import { overlaySignature, todayNoteTitle, extractTodoItems, DEFAULT_NEW_NOTE_TITLE } from "./workbenchHelpers";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
-import { MobileListCard, MobileNavCard } from "./WorkbenchMobilePanels";
 import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
 import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
@@ -98,6 +98,7 @@ export function MemoWorkbench({
   const [folders, setFolders] = useState<Folder[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [notes, setNotes] = useState<NoteListItem[]>([]);
+  const notesRef = useRef(notes);
 
   const [mode, setMode] = useState<ListMode>("active");
   const [selectedFolderId, setSelectedFolderId] = useState<string | undefined>(undefined);
@@ -161,6 +162,9 @@ export function MemoWorkbench({
     content: "",
     overlayKey: "",
   });
+  /** setState 직후 디바운스된 flushAutosave 가 옛 title/content 클로저를 읽는 것을 막기 위한 동기 초안 */
+  const draftTitleRef = useRef("");
+  const draftContentRef = useRef("");
   // 본문 위 자유 그림 레이어 상태. activeNote.overlay_strokes 와 양방향 동기.
   const [overlayStrokes, setOverlayStrokes] = useState<OverlayStroke[]>([]);
   const [drawingMode, setDrawingMode] = useState(false);
@@ -188,8 +192,6 @@ export function MemoWorkbench({
   // 위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장이
   // 직접 들고 있다. 메뉴 상태 / 키보드 선택 / DOM 좌표 추적 모두 CodeMirror 가
   // 관리하므로 React state 는 두지 않는다.
-  // 새 노트를 만든 직후 제목 input 으로 포커스를 자동 이동시킬지.
-  const [autoFocusTitle, setAutoFocusTitle] = useState(false);
   // 음성 녹음 상태
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -200,6 +202,9 @@ export function MemoWorkbench({
   // otherwise React re-renders mid-composition and the in-progress jamo
   // (e.g. the last 한글 character) gets dropped.
   const composingRef = useRef(false);
+  /** loadNote 가 오래된 closure 를 쓰지 않도록 — 노트 전환 직전 flush 에 최신 id/detail 필요 */
+  const activeNoteIdRef = useRef<string | undefined>(undefined);
+  const activeNoteRef = useRef<NoteDetail | undefined>(undefined);
 
   const handleApiError = useCallback(
     (e: unknown) => {
@@ -347,6 +352,17 @@ export function MemoWorkbench({
   }, [reloadNotes]);
 
   useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  useEffect(() => {
+    activeNoteIdRef.current = activeNoteId;
+  }, [activeNoteId]);
+  useEffect(() => {
+    activeNoteRef.current = activeNote;
+  }, [activeNote]);
+
+  useEffect(() => {
     setSelectedNoteIds((prev) => {
       if (prev.size === 0) return prev;
       const alive = new Set(notes.map((n) => n.id));
@@ -377,10 +393,88 @@ export function MemoWorkbench({
     return () => document.removeEventListener("keydown", onKeyDownDelete);
   }, [handleDeleteSelectedNotes, selectedNoteIds.size]);
 
+  /** 제목 input·CodeMirror 에만 있고 아직 ref/state 에 안 올라온 글자까지 플러시에 포함 */
+  function syncDraftFromDom(): void {
+    const titleEl = titleInputRef.current;
+    if (titleEl) draftTitleRef.current = titleEl.value;
+    const view = editorViewRef.current;
+    if (view) draftContentRef.current = view.state.doc.toString();
+  }
+
+  const flushDraftForNote = useCallback(
+    async (noteId: string, note: NoteDetail, forceSnapshot?: boolean): Promise<boolean> => {
+      if (!noteId || note.deleted_at) return true;
+      syncDraftFromDom();
+      const nextTitle = draftTitleRef.current;
+      const nextContent = draftContentRef.current;
+      const sameTitle = nextTitle === lastSentRef.current.title;
+      const sameBody = nextContent === lastSentRef.current.content;
+      if (sameTitle && sameBody && !forceSnapshot) return true;
+
+      try {
+        setSaveState("saving");
+        const updated = await api.patchNote(token, noteId, {
+          title: nextTitle,
+          content: nextContent,
+          tag_ids: note.tags.map((x) => x.id),
+          folder_id: note.folder_id ?? null,
+          force_snapshot: !!forceSnapshot,
+        });
+        setActiveNote(updated);
+        draftTitleRef.current = updated.title;
+        draftContentRef.current = updated.content;
+        setTitle(updated.title);
+        setContent(updated.content);
+        lastSentRef.current = {
+          title: updated.title,
+          content: updated.content,
+          overlayKey: overlaySignature(updated.overlay_strokes ?? []),
+        };
+        setSaveState("saved");
+        void reloadNotes();
+        void refreshUsage();
+        const vers = await api.listVersions(token, noteId);
+        setVersions(vers);
+        return true;
+      } catch (e) {
+        handleApiError(e);
+        setSaveState("dirty");
+        return false;
+      }
+    },
+    [handleApiError, refreshUsage, reloadNotes, token],
+  );
+
+  const flushAutosave = useCallback(
+    async (forceSnapshot?: boolean) => {
+      if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
+      await flushDraftForNote(activeNoteId, activeNote, forceSnapshot);
+    },
+    [activeNote, activeNoteId, flushDraftForNote],
+  );
+
   const loadNote = useCallback(
     async (id: string) => {
       try {
         setError(null);
+
+        if (saveTimerRef.current) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
+
+        const prevId = activeNoteIdRef.current;
+        const prevNote = activeNoteRef.current;
+        if (prevId && prevNote && !prevNote.deleted_at) {
+          const saved = await flushDraftForNote(prevId, prevNote, false);
+          if (!saved) return;
+        }
+
+        const stalePending = pendingFocusNewNoteRef.current;
+        if (stalePending != null && stalePending !== id) {
+          pendingFocusNewNoteRef.current = null;
+        }
+
         setPanel("editor");
         setActiveNoteId(id);
         // 노트가 바뀌면 이전 노트에서 두었던 캐럿 위치는 의미가 없다. 사용자가
@@ -389,8 +483,17 @@ export function MemoWorkbench({
         // 이전 노트의 오프셋이 새 노트에 적용돼서 예상치 못한 위치(또는 0)에
         // 박히는 사고가 난다.
         resetLastDocCursor();
+        // getNote 완료 전까지 React title 이 전 노트(방금 flush 한 값 포함)로 남아
+        // 제목 입력칸이 잠깐 잘못 보였다가 바뀌는 현상 방지 — 목록에 있는 제목으로 즉시 맞춤.
+        const listHit = notesRef.current.find((n) => n.id === id);
+        const optimisticTitle = listHit?.title ?? "";
+        draftTitleRef.current = optimisticTitle;
+        setTitle(optimisticTitle);
+
         const note = await api.getNote(token, id);
         setActiveNote(note);
+        draftTitleRef.current = note.title;
+        draftContentRef.current = note.content;
         setTitle(note.title);
         setContent(note.content);
         const incomingOverlay = Array.isArray(note.overlay_strokes) ? note.overlay_strokes : [];
@@ -409,43 +512,7 @@ export function MemoWorkbench({
         handleApiError(e);
       }
     },
-    [handleApiError, token],
-  );
-
-  const flushAutosave = useCallback(
-    async (forceSnapshot?: boolean) => {
-      if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
-      const note = activeNote;
-      const sameTitle = title === lastSentRef.current.title;
-      const sameBody = content === lastSentRef.current.content;
-      if (sameTitle && sameBody && !forceSnapshot) return;
-
-      try {
-        setSaveState("saving");
-        const updated = await api.patchNote(token, activeNoteId, {
-          title,
-          content,
-          tag_ids: note.tags.map((x) => x.id),
-          folder_id: note.folder_id ?? null,
-          force_snapshot: !!forceSnapshot,
-        });
-        setActiveNote(updated);
-        lastSentRef.current = {
-          title,
-          content,
-          overlayKey: overlaySignature(updated.overlay_strokes ?? []),
-        };
-        setSaveState("saved");
-        void reloadNotes();
-        void refreshUsage();
-        const vers = await api.listVersions(token, activeNoteId);
-        setVersions(vers);
-      } catch (e) {
-        handleApiError(e);
-        setSaveState("dirty");
-      }
-    },
-    [activeNote, activeNoteId, content, handleApiError, refreshUsage, reloadNotes, title, token],
+    [flushDraftForNote, handleApiError, token],
   );
 
   // 그림 레이어 stroke 가 바뀌면 디바운스 후 서버로 패치한다. 본문 자동 저장과
@@ -500,7 +567,7 @@ export function MemoWorkbench({
       const details = await Promise.all(rows.map((n) => api.getNote(token, n.id)));
       const items = details.flatMap((note) => {
         const sourceContent = activeNoteId === note.id ? content : note.content;
-        const sourceTitle = activeNoteId === note.id ? title : note.title;
+        const sourceTitle = activeNoteId === note.id ? draftTitleRef.current : note.title;
         return extractTodoItems({ id: note.id, title: sourceTitle }, sourceContent);
       });
       setTodoItems(items);
@@ -509,7 +576,7 @@ export function MemoWorkbench({
     } finally {
       setTodoLoading(false);
     }
-  }, [activeNoteId, content, handleApiError, title, token]);
+  }, [activeNoteId, content, handleApiError, token]);
 
   useEffect(() => {
     if (rightPanel !== "todos") return;
@@ -539,16 +606,17 @@ export function MemoWorkbench({
         const nextContent = lines.join("\n");
         const updated = await api.patchNote(token, item.noteId, {
           content: nextContent,
-          title: isActive ? title : note.title,
+          title: isActive ? draftTitleRef.current : note.title,
           tag_ids: note.tags.map((x) => x.id),
           folder_id: note.folder_id ?? null,
         });
         if (isActive) {
           setContent(nextContent);
+          draftContentRef.current = nextContent;
           setActiveNote(updated);
           lastSentRef.current = {
             ...lastSentRef.current,
-            title,
+            title: draftTitleRef.current,
             content: nextContent,
           };
           setSaveState("saved");
@@ -568,7 +636,7 @@ export function MemoWorkbench({
         handleApiError(e);
       }
     },
-    [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, title, token],
+    [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, token],
   );
 
   const handleCompositionStart = useCallback(() => {
@@ -582,119 +650,104 @@ export function MemoWorkbench({
   const handleTitleCompositionEnd = useCallback(
     (ev: React.CompositionEvent<HTMLInputElement>) => {
       composingRef.current = false;
-      setTitle(ev.currentTarget.value);
+      const v = ev.currentTarget.value;
+      draftTitleRef.current = v;
+      setTitle(v);
       scheduleAutosave();
     },
     [scheduleAutosave],
   );
 
-  useEffect(() => {
-    return () => {
-      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    };
-  }, []);
+  /**
+   * 새 노트 직후 일정 시간 동안 제목 input 으로 포커스를 강제로 잡아둔다.
+   * - CodeMirror 가 마운트되며 본문에 focus 가 들어가는 시점을 capture focusin 으로 즉시 가로채 제목으로 되돌린다.
+   * - 약 700ms 간 짧은 간격으로 재시도해서 어떤 비동기 effect 뒤에도 안정적으로 제목에 머문다.
+   */
+  const armTitleFocusGuardRef = useRef<{ noteId: string; dispose: () => void } | null>(null);
+  const armTitleFocusGuard = useCallback((noteId: string) => {
+    armTitleFocusGuardRef.current?.dispose();
+    pendingFocusNewNoteRef.current = noteId;
 
-  useLayoutEffect(() => {
-    const pending = pendingFocusNewNoteRef.current;
-    if (!pending || pending !== activeNoteId) return;
-    const note = activeNote;
-    if (!note || note.id !== pending || note.deleted_at) return;
-    pendingFocusNewNoteRef.current = null;
-    const focusTitle = () => {
+    const focusTitle = (): boolean => {
       const el = titleInputRef.current;
-      if (!el) return;
-      el.focus({ preventScroll: true });
-      try {
-        el.select();
-      } catch {
-        /* noop */
-      }
-    };
-    focusTitle();
-    // 모바일/PWA 등에서 첫 호출이 무시될 수 있어 한 틱 뒤 재시도.
-    window.setTimeout(focusTitle, 0);
-    window.setTimeout(focusTitle, 120);
-  }, [activeNoteId, activeNote]);
-
-  // useLayoutEffect 가 놓치는 케이스(다른 컴포넌트가 await 사이에 포커스를 가져
-  // 가버리는 등) 를 보강하기 위해, 새 노트를 만든 직후 호출자 쪽에서 한 번 더
-  // 명시적으로 제목 input 에 캐럿을 넣어준다.
-  // 새 노트 직후 제목 input 으로 캐럿을 옮긴다. 단순히 한두 번 focus() 를
-  // 부르는 것만으로는 (CodeMirror 마운트, 자동저장, 다른 이펙트가 await 중간에
-  // 끼면서) 포커스가 다시 빼앗기는 케이스가 잡힌다. 그래서 짧은 간격으로
-  // 짧게 폴링하다가 input 이 실제로 활성 element 가 되면 멈춘다.
-  function focusTitleSoon(): void {
-    setAutoFocusTitle(true);
-    let attempts = 0;
-    const maxAttempts = 25; // ~1.5s at 60ms
-    const tryFocus = () => {
-      const el = titleInputRef.current;
-      const before = document.activeElement;
-      if (el && document.activeElement !== el) {
+      if (!el) return false;
+      if (document.activeElement !== el) {
         try {
           el.focus({ preventScroll: true });
+        } catch {
+          /* noop */
+        }
+      }
+      try {
+        el.setSelectionRange(0, el.value.length);
+      } catch {
+        try {
           el.select();
         } catch {
           /* noop */
         }
       }
-      const after = document.activeElement;
-      // eslint-disable-next-line no-console
-      console.log("[title-focus]", {
-        attempt: attempts,
-        hasEl: !!el,
-        beforeTag: before?.tagName,
-        beforeCls: (before as HTMLElement | null)?.className?.slice?.(0, 60),
-        afterTag: after?.tagName,
-        afterCls: (after as HTMLElement | null)?.className?.slice?.(0, 60),
-      });
-      if (el && document.activeElement === el) {
-        return;
-      }
-      attempts += 1;
-      if (attempts < maxAttempts) {
-        window.setTimeout(tryFocus, 60);
-      }
-    };
-    requestAnimationFrame(tryFocus);
-  }
-
-  // autoFocusTitle 가 true 면, 활성 노트가 바뀔 때마다 title input 이 마운트되는
-  // 첫 시점에 강제로 포커스를 잡는다. 한 번 포커스가 들어가면 플래그를 내린다.
-  useEffect(() => {
-    if (!autoFocusTitle) return;
-    if (!activeNote || activeNote.deleted_at) return;
-    const tryFocus = () => {
-      const el = titleInputRef.current;
-      if (!el) return false;
-      el.focus({ preventScroll: true });
-      try {
-        el.select();
-      } catch {
-        /* noop */
-      }
       return document.activeElement === el;
     };
-    if (tryFocus()) {
-      setAutoFocusTitle(false);
+
+    focusTitle();
+
+    const onFocusIn = (ev: FocusEvent) => {
+      if (pendingFocusNewNoteRef.current !== noteId) return;
+      const titleEl = titleInputRef.current;
+      if (!titleEl) return;
+      const target = ev.target as Node | null;
+      if (target === titleEl) return;
+      window.setTimeout(focusTitle, 0);
+    };
+    document.addEventListener("focusin", onFocusIn, true);
+
+    const timers: number[] = [];
+    [0, 16, 32, 64, 100, 160, 240, 360, 520, 750, 1100, 1600, 2200].forEach((ms) => {
+      timers.push(window.setTimeout(focusTitle, ms));
+    });
+    const raf = window.requestAnimationFrame(focusTitle);
+
+    const expire = window.setTimeout(() => {
+      armTitleFocusGuardRef.current?.dispose();
+    }, 2600);
+
+    const dispose = () => {
+      document.removeEventListener("focusin", onFocusIn, true);
+      timers.forEach((t) => window.clearTimeout(t));
+      window.cancelAnimationFrame(raf);
+      window.clearTimeout(expire);
+      if (pendingFocusNewNoteRef.current === noteId) {
+        pendingFocusNewNoteRef.current = null;
+      }
+      if (armTitleFocusGuardRef.current?.noteId === noteId) {
+        armTitleFocusGuardRef.current = null;
+      }
+    };
+    armTitleFocusGuardRef.current = { noteId, dispose };
+  }, []);
+
+  // 새 노트 activeNote 반영 직후·자식(CodeMirror) 레이아웃까지 끝난 뒤에만 가드를 건다.
+  // flushSync 전에 arm 을 걸면 titleInputRef 가 아직 없어 포커스가 전부 스킵된다.
+  useLayoutEffect(() => {
+    const pending = pendingFocusNewNoteRef.current;
+    if (!pending || pending !== activeNoteId || !activeNote || activeNote.id !== pending || activeNote.deleted_at) {
       return;
     }
-    const id1 = window.requestAnimationFrame(() => {
-      if (tryFocus()) setAutoFocusTitle(false);
-    });
-    const id2 = window.setTimeout(() => {
-      if (tryFocus()) setAutoFocusTitle(false);
-    }, 80);
-    const id3 = window.setTimeout(() => {
-      tryFocus();
-      setAutoFocusTitle(false);
-    }, 240);
+    const view = editorViewRef.current;
+    const ae = document.activeElement;
+    if (view && ae instanceof HTMLElement && view.dom.contains(ae)) {
+      ae.blur();
+    }
+    armTitleFocusGuard(pending);
+  }, [activeNoteId, activeNote?.id, armTitleFocusGuard]);
+
+  useEffect(() => {
     return () => {
-      window.cancelAnimationFrame(id1);
-      window.clearTimeout(id2);
-      window.clearTimeout(id3);
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      armTitleFocusGuardRef.current?.dispose();
     };
-  }, [autoFocusTitle, activeNote?.id]);
+  }, []);
 
   // 컨텍스트 메뉴: ESC 또는 바깥 클릭으로 닫기.
   // 메뉴 안 클릭은 무시해야 메뉴 버튼 onClick이 정상 발화한다.
@@ -794,18 +847,13 @@ export function MemoWorkbench({
   async function handleNewNoteIn(folderId: string | null) {
     try {
       setError(null);
-      // user gesture context 안에서 먼저 focus를 한 번 가져온다.
-      // (await 뒤로 미루면 모바일/PWA에서 키보드가 안 뜨는 경우가 있다.)
-      titleInputRef.current?.focus({ preventScroll: true });
       const draft = await api.createNote(token, {
-        title: "",
+        title: DEFAULT_NEW_NOTE_TITLE,
         content: "",
         folder_id: folderId,
         tag_ids: selectedTagId ? [selectedTagId] : [],
       });
-      pendingFocusNewNoteRef.current = draft.id;
-      await reloadNotes();
-      await loadNote(draft.id);
+      await activateFreshDraft(draft);
       if (folderId) {
         setExpandedFolders((prev) => {
           const next = new Set(prev);
@@ -813,8 +861,6 @@ export function MemoWorkbench({
           return next;
         });
       }
-      if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
-      focusTitleSoon();
     } catch (e) {
       handleApiError(e);
     }
@@ -861,6 +907,7 @@ export function MemoWorkbench({
         await api.patchNote(token, r.id, { title: draft });
         await reloadNotes();
         if (activeNoteId === r.id) {
+          draftTitleRef.current = draft;
           setTitle(draft);
         }
       }
@@ -991,17 +1038,13 @@ export function MemoWorkbench({
   async function handleNewNote() {
     try {
       setError(null);
-      titleInputRef.current?.focus({ preventScroll: true });
       const draft = await api.createNote(token, {
-        title: "",
+        title: DEFAULT_NEW_NOTE_TITLE,
         content: "",
         folder_id: null,
         tag_ids: selectedTagId ? [selectedTagId] : [],
       });
-      pendingFocusNewNoteRef.current = draft.id;
-      await reloadNotes();
-      await loadNote(draft.id);
-      focusTitleSoon();
+      await activateFreshDraft(draft);
     } catch (e) {
       handleApiError(e);
     }
@@ -1023,13 +1066,56 @@ export function MemoWorkbench({
         folder_id: null,
         tag_ids: [],
       });
-      pendingFocusNewNoteRef.current = draft.id;
-      await reloadNotes();
-      await loadNote(draft.id);
-      focusTitleSoon();
+      await activateFreshDraft(draft);
     } catch (e) {
       handleApiError(e);
     }
+  }
+
+  /**
+   * 새 노트를 만들고 받은 NoteDetail 을 그대로 활성화한다. loadNote 와 달리
+   * api.getNote 를 다시 부르지 않아 await 사이의 렌더 사이클을 줄이고,
+   * 그 직후 armTitleFocusGuard 로 제목에 포커스를 강제로 머무르게 한다.
+   */
+  async function activateFreshDraft(draft: NoteDetail): Promise<void> {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    const prevId = activeNoteIdRef.current;
+    const prevNote = activeNoteRef.current;
+    if (prevId && prevId !== draft.id && prevNote && !prevNote.deleted_at) {
+      const saved = await flushDraftForNote(prevId, prevNote, false);
+      if (!saved) return;
+    }
+
+    pendingFocusNewNoteRef.current = draft.id;
+
+    flushSync(() => {
+      resetLastDocCursor();
+      setPanel("editor");
+      setActiveNoteId(draft.id);
+      setActiveNote(draft);
+      draftTitleRef.current = draft.title;
+      draftContentRef.current = draft.content;
+      setTitle(draft.title);
+      setContent(draft.content);
+      const incomingOverlay = Array.isArray(draft.overlay_strokes) ? draft.overlay_strokes : [];
+      setOverlayStrokes(incomingOverlay);
+      setDrawingMode(false);
+      lastSentRef.current = {
+        title: draft.title,
+        content: draft.content,
+        overlayKey: overlaySignature(incomingOverlay),
+      };
+      setSaveState("saved");
+    });
+
+    void reloadNotes();
+    api
+      .listVersions(token, draft.id)
+      .then(setVersions)
+      .catch(() => {});
   }
 
   async function handleListItemAction(item: NoteListItem) {
@@ -1049,6 +1135,8 @@ export function MemoWorkbench({
       if (activeNoteId === item.id) {
         setActiveNoteId(undefined);
         setActiveNote(undefined);
+        draftTitleRef.current = "";
+        draftContentRef.current = "";
         setTitle("");
         setContent("");
         setPanel("list");
@@ -1074,6 +1162,8 @@ export function MemoWorkbench({
       if (activeNoteId && removed.has(activeNoteId)) {
         setActiveNoteId(undefined);
         setActiveNote(undefined);
+        draftTitleRef.current = "";
+        draftContentRef.current = "";
         setTitle("");
         setContent("");
         setPanel("list");
@@ -1653,45 +1743,14 @@ export function MemoWorkbench({
     [memoEditorContextExt, slashMenuExtension, wikilinkExt],
   );
 
+  // 편집 중인 제목은 IME 조합 때문에 서버 반영·reloadNotes 가 늦을 수 있다.
+  // 사이드바/모바일 목록은 에디터의 title state 와 동기된 표시를 위해 활성 노트만 병합한다.
+  const notesWithLiveTitle = useMemo(() => {
+    if (!activeNoteId) return notes;
+    return notes.map((n) => (n.id === activeNoteId ? { ...n, title } : n));
+  }, [notes, activeNoteId, title]);
+
   // ---------- Render ----------
-
-  const navCard = (
-    <MobileNavCard
-      mode={mode}
-      setMode={setMode}
-      setPanel={setPanel}
-      selectedFolderId={selectedFolderId}
-      setSelectedFolderId={setSelectedFolderId}
-      selectedTagId={selectedTagId}
-      setSelectedTagId={setSelectedTagId}
-      debouncedQuery={debouncedQuery}
-      folderOptions={folderOptions}
-      tags={tags}
-      usage={usage}
-      beginCreateFolder={beginCreateFolder}
-      handleCreateTag={handleCreateTag}
-      handleExport={handleExport}
-      onLogout={onLogout}
-    />
-  );
-
-  const listCard = (
-    <MobileListCard
-      mode={mode}
-      notes={notes}
-      activeNoteId={activeNoteId}
-      query={query}
-      onQueryChange={setQuery}
-      debouncedQuery={debouncedQuery}
-      handleNewNote={handleNewNote}
-      loadNote={(id) => {
-        void loadNote(id);
-      }}
-      handleListItemAction={(note) => {
-        void handleListItemAction(note);
-      }}
-    />
-  );
 
   // ---------- 데스크탑 옵시디언풍 사이드 ----------
 
@@ -1764,7 +1823,7 @@ export function MemoWorkbench({
     folderOptions.filter((f) => (f.parent_id ?? null) === parentId);
   // 노트는 별도 sort_order가 없으므로 매 렌더에서 이름 자연 정렬 (숫자→영문→한글)
   const notesInFolder = (folderId: string | null) =>
-    notes
+    notesWithLiveTitle
       .filter((n) => (n.folder_id ?? null) === folderId)
       .slice()
       .sort((a, b) => compareName(a.title || "", b.title || "") || a.id.localeCompare(b.id));
@@ -1840,7 +1899,7 @@ export function MemoWorkbench({
       const [start, end] = from <= to ? [from, to] : [to, from];
       setSelectedNoteIds(new Set(siblings.slice(start, end + 1).map((n) => n.id)));
     },
-    [notes],
+    [notesWithLiveTitle],
   );
 
   const canDropIntoFolder = useCallback(
@@ -1885,7 +1944,7 @@ export function MemoWorkbench({
       beginCreateFolder={beginCreateFolder}
       handleNewNoteIn={(id) => void handleNewNoteIn(id)}
       debouncedQuery={debouncedQuery}
-      notes={notes}
+      notes={notesWithLiveTitle}
       expandedFolders={expandedFolders}
       toggleFolderExpanded={toggleFolderExpanded}
       childrenOf={childrenOf}
@@ -1974,15 +2033,18 @@ export function MemoWorkbench({
       titleInputRef={titleInputRef}
       title={title}
       onTitleChange={(next) => {
+        draftTitleRef.current = next;
         setTitle(next);
         if (!composingRef.current) scheduleAutosave();
       }}
       onTitleCompositionStart={handleCompositionStart}
       onTitleCompositionEnd={handleTitleCompositionEnd}
+      onTitleBlur={() => void flushAutosave(false)}
       allTags={tags}
       onToggleTagForActive={toggleTagForActive}
       content={content}
       onBodyChange={(value) => {
+        draftContentRef.current = value;
         setContent(value);
         if (!composingRef.current) scheduleAutosave();
         const view = editorViewRef.current;
@@ -2061,24 +2123,6 @@ export function MemoWorkbench({
           <div className="min-h-0 min-w-0 bg-white">{editorCard}</div>
           {rightPanelCard}
         </div>
-
-        <div className="hidden">
-          <div className={`${panel === "nav" ? "flex flex-1" : "hidden"} bg-[#fcfcfb]`}>{navCard}</div>
-          <div className={`${panel === "list" ? "flex flex-1" : "hidden"} bg-[#f7f8fb]`}>{listCard}</div>
-          <div className={`${panel === "editor" ? "flex flex-1 bg-white" : "hidden"} flex-col overflow-hidden`}>{editorCard}</div>
-        </div>
-
-        {/* 모바일 전용 FAB: '목록' 패널에서만 노출 (에디터 본문을 가리지 않게) */}
-        {panel === "list" ? (
-          <button
-            type="button"
-            aria-label="새 노트"
-            onClick={handleNewNote}
-            className="hidden"
-          >
-            +
-          </button>
-        ) : null}
 
         <ContextMenu
           target={contextMenu}
