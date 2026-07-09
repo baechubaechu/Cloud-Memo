@@ -6,8 +6,8 @@
 ## 레포 위치 (현재)
 
 - **경로:** `C:\Users\user\CloudMemo` (이전: `.cursor\projects\empty-window\cloud-memo` 에서 이동)
-- **브랜치:** `feat/phase1-multimedia-blocks`
-- **마지막 커밋:** `bae1ad8` — `refactor(memo): split monolithic editor.ts into focused modules`
+- **브랜치:** `main`
+- **마지막 커밋:** `b3983a0` — `fix(memo): title autosave/focus and Pretendard; expand roadmap`
 
 ## 이 채팅에서 다룬 큰 줄기
 
