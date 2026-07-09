@@ -26,6 +26,7 @@
   `ROADMAP_PLATFORM.md`, `ROADMAP_TECH.md`, `ROADMAP_CHANGELOG.md` 로 이전하고
   `ROADMAP.md` 는 인덱스 전용으로 정리.
 - 항목을 추가/소진할 때마다 가능하면 같은 PR 안에서 관련 로드맵 파일도 같이 갱신.
+- 2026-05-11: `deploy/` 배포 프로필 분리 — VPS, 집 허브(저전력), 데스크톱 로컬, 본인 클라우드 VM. 제품 원칙: 벤더 메모 SaaS·제3자 동기화 저장소 없음.
 - 2026-05-11: `ROADMAP_PRODUCT.md` 에 **모바일 · 태블릿 · 브라우저 호환** 절 신설
   (구현 백로그 + 수동 검증 표). 미디어 툴바 UX 잔여는 해당 절로 흡수.
   `ROADMAP_TECH.md` 다음 단계, `ROADMAP_NEXT.md`, `ROADMAP.md` 인덱스 표에 링크 반영.

@@ -1,12 +1,16 @@
 # Cloud Memo (Personal Self-Host)
 
-옵시디언 풍 마크다운 에디터를 가진 **개인 클라우드 메모**입니다.  
-한 사용자(=한 인스턴스)를 전제로 설계되었으며, 다음 두 가지 배포 형태를 모두 지원합니다.
+옵시디언 풍 마크다운 에디터를 가진 **개인 메모**입니다.  
+한 사용자(=한 인스턴스)를 전제로 하며, **벤더 메모 SaaS가 아닙니다.** 데이터는 사용자가 통제하는 VPS·집 허브·PC에만 둡니다.
 
-| 모드 | DB 위치 | 외부 접근 | 권장 사용처 |
-|---|---|---|---|
-| **VPS 모드** | 본인 VPS | 도메인 + 자동 HTTPS | 외부에서 항상 접근, 24/7 가동 |
-| **로컬 모드** | 본인 PC/NAS | 로컬 LAN | PC가 켜져 있을 때만 접근, 무료/사적 |
+**배포 프로필:** [`deploy/README.md`](./deploy/README.md) — VPS / 집 허브(저전력) / 데스크톱 로컬 / 본인 클라우드 VM
+
+| 모드 | 문서 | 요약 |
+|---|---|---|
+| **VPS** | [deploy/vps](./deploy/vps/) | 도메인 + HTTPS, 24/7 |
+| **집 허브** | [deploy/hub](./deploy/hub/) | Pi·NAS, Tailscale 권장 |
+| **데스크톱** | [deploy/desktop-local](./deploy/desktop-local/) | 개발·PC 허브 |
+| **클라우드 VM** | [deploy/cloud](./deploy/cloud/) | Lightsail·Hetzner 등 **본인 VM** |
 
 > **중요**: 이 앱은 SaaS가 아닙니다. 사용자는 각자 자기 인스턴스를 띄워 자기 DB를 가집니다.  
 > 다른 사람의 데이터가 당신 인스턴스로 들어오지 않습니다(반대도 마찬가지).
@@ -23,8 +27,9 @@
 
 ```
 cloud-memo/
-├── docker-compose.yml         # memo-postgres / memo-api / memo-web / memo-worker / caddy
-├── .env.example               # 인스턴스마다 복사 → .env 로 사용
+├── deploy/                    # 배포 프로필 (VPS / hub / desktop-local / cloud)
+├── docker-compose.yml         # 루트 compose (개발·호환)
+├── .env.example
 ├── caddy/Caddyfile            # /api/* → memo-api, 그 외 → memo-web (+ 보안 헤더)
 ├── api/                       # FastAPI
 ├── web/                       # Next.js
@@ -35,78 +40,41 @@ cloud-memo/
     └── uploads/               # 첨부파일 (이미지/오디오/일반파일/썸네일)
 ```
 
-## 빠른 시작 — 모드별 가이드
+## 빠른 시작
 
-### A. VPS 모드 (본인 VPS에 자기 인스턴스 띄우기)
+상세는 **[`deploy/README.md`](./deploy/README.md)** 를 보세요.
 
-VPS에 Docker + Docker Compose가 설치되어 있다고 가정합니다.
+### VPS (본인 서버 + 도메인)
 
 ```bash
-git clone <this repo> /opt/cloud-memo
+git clone https://github.com/baechubaechu/Cloud-Memo.git /opt/cloud-memo
 cd /opt/cloud-memo
-cp .env.example .env
-
-# 다음 4개는 반드시 직접 수정한 후 컨테이너 띄우세요.
-#  - APP_ENV=production
-#  - JWT_SECRET=<32자 이상 랜덤 문자열>
-#  - INITIAL_USER_PASSWORD=<자기만 아는 비번>
-#  - DOMAIN=memo.example.com   # 본인이 보유한 도메인
-nano .env
-
-docker compose up -d --build
+cp deploy/vps/.env.example deploy/vps/.env
+nano deploy/vps/.env
+bash deploy/vps/setup.sh
 ```
 
-위 4가지가 빠지면 컨테이너가 의도적으로 시작되지 않습니다 (사고 방지).
-브라우저로 `https://memo.example.com` 으로 접속 → 1단계: 비밀번호 입력 → 끝.
+### 집 허브 (라즈베리 파이 / NAS)
 
-`JWT_SECRET` 은 다음 한 줄로 만들 수 있습니다.
 ```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"
+cp deploy/hub/.env.example deploy/hub/.env
+nano deploy/hub/.env
+bash deploy/hub/setup.sh
 ```
 
-### B. 로컬 모드 (자기 PC/NAS에서 띄우고 같은 네트워크에서 접근)
-
-PC에 Docker가 있으면 동일하게:
-```bash
-cp .env.example .env
-# .env 에서 APP_ENV 는 development 로 두고, INITIAL_USER_PASSWORD 만 바꾸기
-docker compose up -d --build
-```
-- 로컬 PC: `http://localhost`
-- 같은 LAN의 폰/태블릿: `http://<PC의 LAN IP>` 로 접근 가능 (Caddy 80 포트)
-- PC가 꺼져 있으면 다른 기기에서도 접근 불가 (= 의도된 동작)
-
-#### 더 가벼운 로컬 개발 (Docker 없이 코드만 빠르게 고치고 싶을 때)
-
-평소 작업은 Postgres 컨테이너 + 백엔드/프런트 직접 실행이 빠릅니다.
-
-**권장: 한 번에** — Docker Desktop 을 켠 뒤 레포 루트에서:
+### 로컬 개발 (Windows)
 
 ```powershell
-# 사전 준비 (1회)
-cd api;  python -m venv .venv;  .\.venv\Scripts\python -m pip install -r requirements.txt;  cd ..
-cd web;  npm install;  cd ..
-
-# 평소 — Postgres 기동 → API 는 새 창 → 이 창에서 Next (:3000)
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-all.ps1
 ```
 
-`dev-all.ps1` 은 `memo-postgres` 를 띄우고 healthy 될 때까지 기다린 뒤, **:8000** 이 비어 있으면 `dev-api.ps1` 을 **별도 PowerShell 창**에서 실행하고, `/api/health` 가 될 때까지 기다린 다음 **현재 창**에서 `dev-web.ps1`(Next) 을 띄웁니다. API 를 안 켠 채 웹만 열어 `Failed to fetch` 가 나는 상황을 줄이기 위한 스크립트입니다.
+→ [`deploy/desktop-local/README.md`](./deploy/desktop-local/README.md)
 
-**수동으로 나누고 싶을 때** (터미널 2개):
+### 레거시: 루트 compose
 
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-up.ps1   # Postgres만 (선택)
-powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-api.ps1  # FastAPI :8000
-powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-web.ps1  # Next.js :3000
-```
-
-기본 잠금 비밀번호: `1234` (`scripts/dev-api.ps1` 가 환경변수로 주입).
-dev-web 시작 시 로그인 화면이 비번을 자동입력하므로 곧장 `/memo` 진입.
-
-작업 종료:
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1
+```bash
+cp .env.example .env
+docker compose up -d --build
 ```
 
 ## 환경 변수 한눈에
@@ -129,7 +97,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\dev-down.ps1
 | 스크립트 | 용도 | 예시 |
 |---|---|---|
 | `scripts/dev-all.ps1` | 로컬 풀스택: Postgres(Docker) → API(새 창) → Web(현재 창), health 대기 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-all.ps1` |
-| `scripts/deploy-vps.sh` | VPS에서 안전 점검 후 `docker compose up -d --build` 실행 | `bash ./scripts/deploy-vps.sh` |
+| `scripts/deploy-vps.sh` | VPS 배포 (`deploy/vps/setup.sh` 위임) | `bash ./scripts/deploy-vps.sh` |
 | `scripts/change-password.sh` | 잠금 비밀번호 변경 (docker/local/auto) | `bash ./scripts/change-password.sh --new-password "newpass"` |
 | `scripts/change-password.ps1` | 잠금 비밀번호 변경 (Windows) | `powershell -ExecutionPolicy Bypass -File .\scripts\change-password.ps1 -NewPassword "newpass"` |
 | `scripts/dev-firewall.ps1` | Windows 개발용 방화벽 인바운드(3000/8000) 등록 | `powershell -ExecutionPolicy Bypass -File .\scripts\dev-firewall.ps1` |
