@@ -23,9 +23,10 @@
 
 [`ROADMAP_TECH.md`](./ROADMAP_TECH.md) 하단 "기술 부채". `Workbench` 추가 분리는 필요 시.
 
-## 웹 vs 앱
+## 웹 vs 앱 · 동기화
 
-[`ROADMAP_PRODUCT.md`](./ROADMAP_PRODUCT.md) **웹 · 네이티브 앱 · 홈/바탕화면 위젯** — 오늘 노트·빠른 메모·캘린더; 벤치마크 **TickTick · 스케두** 는 같은 절 하위 **참고 서비스 분석**.
+[`ROADMAP_PRODUCT.md`](./ROADMAP_PRODUCT.md) **동기화 · 사용자 허브** — 허브 연결, **자동 동기화 켜기/끄기**, 오프라인 큐.  
+**웹 · 네이티브 앱 · 홈/바탕화면 위젯** — 오늘 노트·빠른 메모·캘린더; 벤치마크 **TickTick · 스케두** 는 같은 절 하위 **참고 서비스 분석**.
 
 ## 읽는 법
 
