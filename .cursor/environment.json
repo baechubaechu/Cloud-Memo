@@ -1,0 +1,19 @@
+{
+  "name": "Cloud Memo",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "cd api && ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    },
+    {
+      "name": "web",
+      "command": "cd web && npm run dev"
+    }
+  ],
+  "ports": [
+    { "name": "web", "port": 3000 },
+    { "name": "api", "port": 8000 }
+  ]
+}
