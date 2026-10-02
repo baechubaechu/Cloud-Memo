@@ -19,7 +19,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import delete, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.database import get_db
 from app.deps import CurrentUser
@@ -111,9 +111,10 @@ def _sync_tags(note: Note, tag_ids: list[uuid_pkg.UUID], db: Session):
 
 
 def _base_list_stmt(user_id: uuid_pkg.UUID, *, trash: bool, archived: Optional[bool]):
+    # 목록 응답은 제목·메타·태그만 쓴다. 본문과 그림 stroke 는 읽지 않는다.
     stmt = (
         select(Note)
-        .options(selectinload(Note.tags), selectinload(Note.attachments))
+        .options(selectinload(Note.tags), defer(Note.content), defer(Note.overlay_strokes))
         .where(Note.user_id == user_id)
     )
     stmt = stmt.where(Note.deleted_at.isnot(None) if trash else Note.deleted_at.is_(None))

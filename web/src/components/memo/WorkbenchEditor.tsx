@@ -538,6 +538,9 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
 
           <section className="relative mx-auto w-full max-w-3xl min-h-[62dvh] py-2">
             <CodeMirror
+              // 노트마다 에디터를 새로 만든다. 같은 인스턴스를 재사용하면 undo
+              // 히스토리가 노트 사이에 이어져 Ctrl+Z 가 이전 노트 본문을 불러온다.
+              key={activeNote.id}
               value={content}
               height="auto"
               autoFocus={false}

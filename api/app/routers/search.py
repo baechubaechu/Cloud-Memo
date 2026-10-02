@@ -15,7 +15,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.database import get_db
 from app.deps import CurrentUser
@@ -40,7 +40,7 @@ def search(
     tag_tokens, text_q = _split_query(q.strip())
     stmt = (
         select(Note)
-        .options(selectinload(Note.tags), selectinload(Note.attachments))
+        .options(selectinload(Note.tags), defer(Note.content), defer(Note.overlay_strokes))
         .where(Note.user_id == me.id)
     )
     stmt = stmt.where(Note.deleted_at.isnot(None) if trash else Note.deleted_at.is_(None))

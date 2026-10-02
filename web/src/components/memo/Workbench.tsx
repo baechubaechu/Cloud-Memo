@@ -153,6 +153,8 @@ export function MemoWorkbench({
   const draftContentRef = useRef("");
   // 본문 위 자유 그림 레이어 상태. activeNote.overlay_strokes 와 양방향 동기.
   const [overlayStrokes, setOverlayStrokes] = useState<OverlayStroke[]>([]);
+  const overlayStrokesRef = useRef(overlayStrokes);
+  overlayStrokesRef.current = overlayStrokes;
   const [drawingMode, setDrawingMode] = useState(false);
   const [drawingTool, setDrawingTool] = useState<OverlayDrawingTool>("pen");
   const [drawingColor, setDrawingColor] = useState("#1f2937");
@@ -399,28 +401,29 @@ export function MemoWorkbench({
 
       try {
         setSaveState("saving");
+        // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
+        // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
         const updated = await api.patchNote(token, noteId, {
           title: nextTitle,
           content: nextContent,
-          tag_ids: note.tags.map((x) => x.id),
-          folder_id: note.folder_id ?? null,
           force_snapshot: !!forceSnapshot,
         });
-        setActiveNote(updated);
-        draftTitleRef.current = updated.title;
-        draftContentRef.current = updated.content;
-        setTitle(updated.title);
-        setContent(updated.content);
+        // 응답으로 제목·본문을 덮어쓰지 않는다. 요청~응답 사이에 입력한 글자가
+        // 서버의 옛 본문으로 되돌려지기 때문. 보낸 값만 "저장됨" 기준으로 기록.
         lastSentRef.current = {
-          title: updated.title,
-          content: updated.content,
-          overlayKey: overlaySignature(updated.overlay_strokes ?? []),
+          ...lastSentRef.current,
+          title: nextTitle,
+          content: nextContent,
         };
-        setSaveState("saved");
         void reloadNotes();
-        void refreshUsage();
+        // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
+        if (activeNoteIdRef.current !== noteId) return true;
+        setActiveNote(updated);
+        const stillClean =
+          draftTitleRef.current === nextTitle && draftContentRef.current === nextContent;
+        setSaveState(stillClean ? "saved" : "dirty");
         const vers = await api.listVersions(token, noteId);
-        setVersions(vers);
+        if (activeNoteIdRef.current === noteId) setVersions(vers);
         return true;
       } catch (e) {
         handleApiError(e);
@@ -428,7 +431,32 @@ export function MemoWorkbench({
         return false;
       }
     },
-    [handleApiError, refreshUsage, reloadNotes, token],
+    [handleApiError, reloadNotes, token],
+  );
+
+  /**
+   * 아직 서버에 안 간 그림 stroke 를 즉시 저장한다. 노트 전환 직전에 불러서
+   * 700ms 디바운스 대기 중이던 그림이 사라지지 않게 한다.
+   */
+  const flushOverlayForNote = useCallback(
+    async (noteId: string): Promise<boolean> => {
+      const strokes = overlayStrokesRef.current;
+      const sig = overlaySignature(strokes);
+      if (sig === lastSentRef.current.overlayKey) return true;
+      if (overlayTimerRef.current) {
+        window.clearTimeout(overlayTimerRef.current);
+        overlayTimerRef.current = null;
+      }
+      try {
+        await api.patchNote(token, noteId, { overlay_strokes: strokes });
+        lastSentRef.current = { ...lastSentRef.current, overlayKey: sig };
+        return true;
+      } catch (e) {
+        handleApiError(e);
+        return false;
+      }
+    },
+    [handleApiError, token],
   );
 
   const flushAutosave = useCallback(
@@ -454,6 +482,7 @@ export function MemoWorkbench({
         if (prevId && prevNote && !prevNote.deleted_at) {
           const saved = await flushDraftForNote(prevId, prevNote, false);
           if (!saved) return;
+          if (!(await flushOverlayForNote(prevId))) return;
         }
 
         const stalePending = pendingFocusNewNoteRef.current;
@@ -497,13 +526,15 @@ export function MemoWorkbench({
         handleApiError(e);
       }
     },
-    [flushDraftForNote, handleApiError, token],
+    [flushDraftForNote, flushOverlayForNote, handleApiError, token],
   );
 
   // 그림 레이어 stroke 가 바뀌면 디바운스 후 서버로 패치한다. 본문 자동 저장과
   // 분리해서 텍스트 편집과 그림이 서로의 디바운스를 깨지 않게 한다.
   useEffect(() => {
     if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
+    // 노트 전환 중(id 는 새 노트, strokes 는 아직 옛 노트 것)에는 저장하지 않는다.
+    if (activeNote.id !== activeNoteId) return;
     const sig = overlaySignature(overlayStrokes);
     if (sig === lastSentRef.current.overlayKey) return;
     if (overlayTimerRef.current) window.clearTimeout(overlayTimerRef.current);
@@ -592,8 +623,6 @@ export function MemoWorkbench({
         const updated = await api.patchNote(token, item.noteId, {
           content: nextContent,
           title: isActive ? draftTitleRef.current : note.title,
-          tag_ids: note.tags.map((x) => x.id),
-          folder_id: note.folder_id ?? null,
         });
         if (isActive) {
           setContent(nextContent);
@@ -1061,6 +1090,7 @@ export function MemoWorkbench({
     if (prevId && prevId !== draft.id && prevNote && !prevNote.deleted_at) {
       const saved = await flushDraftForNote(prevId, prevNote, false);
       if (!saved) return;
+      if (!(await flushOverlayForNote(prevId))) return;
     }
 
     pendingFocusNewNoteRef.current = draft.id;

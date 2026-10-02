@@ -42,7 +42,7 @@ def _kind_from_mime(content_type: str) -> AttachmentKind:
 
 
 @router.post("/notes/{note_id}/attachments", response_model=dict)
-async def upload_attachment(
+def upload_attachment(
     note_id: Annotated[str, Path()],
     db: Db,
     me: CurrentUser,
@@ -57,7 +57,8 @@ async def upload_attachment(
     content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
     kind = _kind_from_mime(content_type)
 
-    body = await file.read()
+    # 동기 핸들러(스레드풀)에서 돌려 썸네일 생성 중에도 다른 요청이 막히지 않게 한다.
+    body = file.file.read()
     max_b = settings.max_upload_mb * 1024 * 1024
     if len(body) > max_b:
         raise HTTPException(status_code=413, detail="File too large")
