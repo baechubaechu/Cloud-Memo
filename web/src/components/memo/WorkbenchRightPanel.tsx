@@ -17,7 +17,7 @@ export type WorkbenchRightPanelProps = {
   setRightPanel: (next: RightPanelKind | null) => void;
   token: string;
   handleUpload: (files: FileList | null) => Promise<void> | void;
-  handleTrashAttachment: (attachment: Attachment) => Promise<void> | void;
+  handleDeleteAttachment: (attachment: Attachment) => Promise<void> | void;
   todoItems: TodoPanelItem[];
   todoLoading: boolean;
   refreshTodoItems: () => Promise<void> | void;
@@ -34,7 +34,7 @@ export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactEleme
     setRightPanel,
     token,
     handleUpload,
-    handleTrashAttachment,
+    handleDeleteAttachment,
     todoItems,
     todoLoading,
     refreshTodoItems,
@@ -91,7 +91,7 @@ export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactEleme
             activeNote={activeNote}
             token={token}
             handleUpload={handleUpload}
-            handleTrashAttachment={handleTrashAttachment}
+            handleDeleteAttachment={handleDeleteAttachment}
           />
         ) : rightPanel === "todos" ? (
           <TodosPanel
@@ -115,9 +115,9 @@ function FilesPanel(props: {
   activeNote: NoteDetail;
   token: string;
   handleUpload: (files: FileList | null) => Promise<void> | void;
-  handleTrashAttachment: (attachment: Attachment) => Promise<void> | void;
+  handleDeleteAttachment: (attachment: Attachment) => Promise<void> | void;
 }): ReactElement {
-  const { activeNote, token, handleUpload, handleTrashAttachment } = props;
+  const { activeNote, token, handleUpload, handleDeleteAttachment } = props;
   const liveAttachments = activeNote.attachments.filter((a) => !a.deleted_at);
   return (
     <div className="space-y-3">
@@ -155,7 +155,7 @@ function FilesPanel(props: {
               type="button"
               className="mt-2 w-full rounded border border-amber-200 px-2 py-1 text-[11px] text-amber-800 hover:bg-amber-50"
               onClick={() => {
-                void handleTrashAttachment(att);
+                void handleDeleteAttachment(att);
               }}
             >
               제거

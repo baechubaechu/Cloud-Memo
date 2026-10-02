@@ -6,7 +6,6 @@ Path scheme:
     GET    /notes/{id}                           -- detail
     PATCH  /notes/{id}                           -- update (autosave + favorite + archive)
     DELETE /notes/{id}                           -- permanent delete
-    POST   /notes/{id}/restore                   -- legacy (no-op when already deleted permanently)
     GET    /notes/{id}/versions                  -- list snapshots
     POST   /notes/{id}/versions                  -- manual snapshot
     POST   /notes/{id}/restore-version/{vid}     -- replace body with version (creates `restore` snapshot first)
@@ -262,7 +261,7 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
 
 
 @router.delete("/{note_id}", response_model=NoteDetail)
-def trash_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+def delete_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     n = _load_with_relations(db, _uid(note_id), me.id)
     if not n:
         raise HTTPException(status_code=404, detail="Not found")
@@ -292,18 +291,6 @@ def trash_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     db.delete(n)
     db.commit()
     return out
-
-
-@router.post("/{note_id}/restore", response_model=NoteDetail)
-def restore_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
-    n = _load_with_relations(db, _uid(note_id), me.id)
-    if not n:
-        raise HTTPException(status_code=404, detail="Not found")
-    n.deleted_at = None
-    db.commit()
-    n2 = _load_with_relations(db, n.id, me.id)
-    assert n2 is not None
-    return _detail(n2)
 
 
 # ---------------- versions ----------------

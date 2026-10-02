@@ -937,7 +937,7 @@ export function MemoWorkbench({
     const msg = `'${label}' 노트를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`;
     if (!(await askConfirm({ title: "노트 삭제", message: msg }))) return;
     try {
-      await api.trashNote(token, noteId);
+      await api.deleteNote(token, noteId);
       await reloadNotes();
       void refreshUsage();
       if (activeNoteId === noteId) {
@@ -1132,7 +1132,7 @@ export function MemoWorkbench({
       return;
     }
     try {
-      await api.trashNote(token, item.id);
+      await api.deleteNote(token, item.id);
       await reloadNotes();
       void refreshUsage();
       if (activeNoteId === item.id) {
@@ -1157,7 +1157,7 @@ export function MemoWorkbench({
         : `선택한 노트 ${targetNotes.length}개를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`;
     if (!(await askConfirm({ title: "노트 삭제", message: msg }))) return;
     try {
-      await Promise.all(targetNotes.map((n) => api.trashNote(token, n.id)));
+      await Promise.all(targetNotes.map((n) => api.deleteNote(token, n.id)));
       await reloadNotes();
       void refreshUsage();
       const removed = new Set(targetNotes.map((n) => n.id));
@@ -1171,18 +1171,6 @@ export function MemoWorkbench({
       }
       setSelectedNoteIds(new Set());
       selectionAnchorRef.current = null;
-    } catch (e) {
-      handleApiError(e);
-    }
-  }
-
-  async function restoreActiveNote() {
-    if (!activeNote?.deleted_at) return;
-    try {
-      await api.restoreNote(token, activeNote.id);
-      await reloadNotes();
-      await loadNote(activeNote.id);
-      setMode("active");
     } catch (e) {
       handleApiError(e);
     }
@@ -1217,6 +1205,20 @@ export function MemoWorkbench({
     } catch (e) {
       handleApiError(e);
       setSaveState("dirty");
+    }
+  }
+
+  /** 이름으로 태그를 만들어(이미 있으면 그 태그를) 현재 노트에 붙인다. */
+  async function createTagForActive(rawName: string) {
+    const name = rawName.trim().replace(/^#+/, "").trim();
+    if (!name || !activeNoteId || !activeNote) return;
+    try {
+      const existing = tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+      const tag = existing ?? (await api.createTag(token, name));
+      if (!existing) await refreshMeta();
+      await toggleTagForActive(tag, true);
+    } catch (e) {
+      handleApiError(e);
     }
   }
 
@@ -1502,10 +1504,14 @@ export function MemoWorkbench({
     }
   }
 
-  async function handleTrashAttachment(att: Attachment) {
-    if (!window.confirm(`첨부를 휴지통으로 보낼까요? ${att.original_filename}`)) return;
+  async function handleDeleteAttachment(att: Attachment) {
+    const ok = await askConfirm({
+      title: "첨부 삭제",
+      message: `'${att.original_filename}' 첨부를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`,
+    });
+    if (!ok) return;
     try {
-      await api.trashAttachment(token, att.id);
+      await api.deleteAttachment(token, att.id);
       if (activeNoteId) await loadNote(activeNoteId);
       void refreshUsage();
     } catch (e) {
@@ -1985,14 +1991,13 @@ export function MemoWorkbench({
     <WorkbenchEditorCard
       activeNote={activeNote}
       onNewNote={handleNewNote}
-      onRestoreDeletedNote={() => void restoreActiveNote()}
       saveState={saveState}
       folderOptions={folderOptions}
       onMoveNoteFolder={handleMoveNoteFolder}
       onToggleFavorite={() => void toggleFavorite()}
       onToggleArchive={() => void toggleArchive()}
       onManualSnapshot={() => void handleManualSnapshot()}
-      onTrashNote={() => {
+      onDeleteNote={() => {
         if (!activeNote) return;
         void handleListItemAction({
           id: activeNote.id,
@@ -2039,6 +2044,7 @@ export function MemoWorkbench({
       onTitleBlur={() => void flushAutosave(false)}
       allTags={tags}
       onToggleTagForActive={toggleTagForActive}
+      onCreateTagForActive={createTagForActive}
       content={content}
       onBodyChange={(value) => {
         draftContentRef.current = value;
@@ -2067,7 +2073,7 @@ export function MemoWorkbench({
         setRightPanel={setRightPanel}
         token={token}
         handleUpload={handleUpload}
-        handleTrashAttachment={handleTrashAttachment}
+        handleDeleteAttachment={handleDeleteAttachment}
         todoItems={todoItems}
         todoLoading={todoLoading}
         refreshTodoItems={refreshTodoItems}

@@ -52,7 +52,6 @@ export type SlashMenuEntry = {
 export type WorkbenchEditorCardProps = {
   activeNote: NoteDetail | undefined;
   onNewNote: () => void;
-  onRestoreDeletedNote: () => void | Promise<void>;
 
   saveState: SaveState;
   folderOptions: Folder[];
@@ -60,7 +59,7 @@ export type WorkbenchEditorCardProps = {
   onToggleFavorite: () => void | Promise<void>;
   onToggleArchive: () => void | Promise<void>;
   onManualSnapshot: () => void | Promise<void>;
-  onTrashNote: () => void | Promise<void>;
+  onDeleteNote: () => void | Promise<void>;
 
   imageInputRef: RefObject<HTMLInputElement | null>;
   onPickImageFile: (file: File) => void | Promise<void>;
@@ -99,6 +98,8 @@ export type WorkbenchEditorCardProps = {
 
   allTags: Tag[];
   onToggleTagForActive: (tag: Tag, nextOn: boolean) => void | Promise<void>;
+  /** 입력한 이름의 태그를 만들어(있으면 재사용) 현재 노트에 붙인다. */
+  onCreateTagForActive: (name: string) => void | Promise<void>;
 
   content: string;
   onBodyChange: (next: string) => void;
@@ -115,14 +116,13 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
   const {
     activeNote,
     onNewNote,
-    onRestoreDeletedNote,
     saveState,
     folderOptions,
     onMoveNoteFolder,
     onToggleFavorite,
     onToggleArchive,
     onManualSnapshot,
-    onTrashNote,
+    onDeleteNote,
     imageInputRef,
     onPickImageFile,
     isRecording,
@@ -149,6 +149,7 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
     onTitleBlur,
     allTags,
     onToggleTagForActive,
+    onCreateTagForActive,
     content,
     onBodyChange,
     codeMirrorExtensions,
@@ -171,23 +172,6 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
             onClick={onNewNote}
           >
             새 노트 만들기
-          </button>
-        </div>
-      </section>
-    );
-  }
-
-  if (activeNote.deleted_at) {
-    return (
-      <section className="flex h-full items-center justify-center p-10 text-center text-sm text-ink-900/65">
-        <div className="max-w-xs space-y-3 rounded-2xl bg-white p-8 shadow-pane ring-1 ring-ink-900/10">
-          <p>이 노트는 휴지통에 있습니다. 내용은 유지되지만 편집하려면 복원해야 합니다.</p>
-          <button
-            type="button"
-            className="rounded-full bg-emerald-600 px-5 py-2 text-xs font-semibold text-white shadow"
-            onClick={() => void onRestoreDeletedNote()}
-          >
-            복원하고 편집
           </button>
         </div>
       </section>
@@ -254,9 +238,9 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
         </button>
         <button
           type="button"
-          onClick={() => void onTrashNote()}
-          title="휴지통으로 이동"
-          aria-label="휴지통으로 이동"
+          onClick={() => void onDeleteNote()}
+          title="노트 삭제"
+          aria-label="노트 삭제"
           className="grid h-7 w-7 place-items-center rounded hover:bg-black/5 hover:text-ink-900"
         >
           <IconTrash size={15} />
@@ -511,9 +495,25 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
                 + 태그
               </summary>
               <div className="absolute left-0 z-30 mt-1 w-56 rounded-md border border-ink-900/15 bg-white p-2 shadow-lg">
+                <input
+                  type="text"
+                  placeholder="새 태그 이름 입력 후 Enter"
+                  aria-label="새 태그 이름"
+                  className="mb-2 h-7 w-full rounded border border-ink-900/15 bg-white px-2 text-[12px] text-ink-900 outline-none focus:border-sky-500"
+                  onKeyDown={(ev) => {
+                    // 한글 조합 중 Enter 는 글자 확정용이므로 무시한다.
+                    if (ev.key !== "Enter" || ev.nativeEvent.isComposing) return;
+                    ev.preventDefault();
+                    const input = ev.currentTarget;
+                    const name = input.value;
+                    if (!name.trim()) return;
+                    input.value = "";
+                    void onCreateTagForActive(name);
+                  }}
+                />
                 <div className="flex max-h-48 flex-wrap gap-1 overflow-auto">
                   {allTags.length === 0 ? (
-                    <p className="text-[11px] text-ink-900/45">먼저 사이드바에서 태그를 만드세요.</p>
+                    <p className="text-[11px] text-ink-900/45">아직 태그가 없습니다.</p>
                   ) : (
                     allTags.map((tag) => {
                       const on = !!activeNote.tags.find((x) => x.id === tag.id);

@@ -1,6 +1,5 @@
 import hashlib
 import mimetypes
-from datetime import datetime, timezone
 import uuid as uuid_pkg
 from typing import Annotated
 
@@ -98,13 +97,20 @@ def upload_attachment(
 
 
 @router.delete("/attachments/{attachment_id}", response_model=dict)
-def trash_attachment(attachment_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+def delete_attachment(attachment_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+    """첨부를 영구 삭제한다 (휴지통 없음). DB 행을 먼저 지우고 파일을 정리한다."""
     aid = _nid(attachment_id)
     a = db.get(Attachment, aid)
     if not a or a.user_id != me.id:
         raise HTTPException(status_code=404, detail="Not found")
-    a.deleted_at = datetime.now(timezone.utc)
+    keys = [k for k in (a.storage_path, a.thumbnail_path) if k]
+    db.delete(a)
     db.commit()
+    for key in keys:
+        try:
+            resolve_storage_path(key).unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
     return {"ok": True}
 
 

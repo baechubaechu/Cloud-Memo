@@ -147,18 +147,8 @@ def main() -> None:
         usage = r.json()
         must("usage.total_bytes >= upload size", usage["total_bytes"] >= len(png), usage)
 
-        # Trash + restore.
-        r = client.delete(f"/api/notes/{note_id}", headers=h)
-        must("note.trash", r.status_code == 200 and r.json()["deleted_at"] is not None, r.text)
-        r = client.get("/api/notes", headers=h, params={"trash": "true"})
-        must("list.trash", any(it["id"] == note_id for it in r.json()), r.text)
-        r = client.post(f"/api/notes/{note_id}/restore", headers=h)
-        must("note.restore", r.status_code == 200 and r.json()["deleted_at"] is None, r.text)
-
-        # Verify before_delete snapshot is in the timeline.
         r = client.get(f"/api/notes/{note_id}/versions", headers=h)
         reasons = [v["reason"] for v in r.json()]
-        must("versions include before_delete", "before_delete" in reasons, reasons)
         must("versions include restore", "restore" in reasons, reasons)
         must("versions include manual", "manual" in reasons, reasons)
 
@@ -200,6 +190,14 @@ def main() -> None:
         r = client.get(f"/api/notes/{note_id}/versions", headers=h)
         reasons = [v["reason"] for v in r.json()]
         must("versions include before_ai_edit", "before_ai_edit" in reasons, reasons)
+
+        # 삭제는 영구 삭제 (휴지통 없음): 노트와 첨부가 함께 사라진다.
+        r = client.delete(f"/api/notes/{note_id}", headers=h)
+        must("note.delete", r.status_code == 200, r.text)
+        r = client.get(f"/api/notes/{note_id}", headers=h)
+        must("note gone after delete", r.status_code == 404, r.text)
+        r = client.get(f"/api/attachments/{att_id}/download", headers=h)
+        must("attachment gone after delete", r.status_code == 404, r.text)
 
         print("\nALL SMOKE TESTS PASSED")
 

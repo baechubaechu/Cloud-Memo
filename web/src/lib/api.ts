@@ -258,12 +258,8 @@ async function patchNote(
   ) as Promise<NoteDetail>;
 }
 
-async function trashNote(token: string, id: string) {
+async function deleteNote(token: string, id: string) {
   return fetchJson(`/api/notes/${id}`, { method: "DELETE" }, token) as Promise<NoteDetail>;
-}
-
-async function restoreNote(token: string, id: string) {
-  return fetchJson(`/api/notes/${id}/restore`, { method: "POST" }, token) as Promise<NoteDetail>;
 }
 
 async function listVersions(token: string, id: string) {
@@ -299,7 +295,7 @@ async function uploadAttachment(token: string, noteId: string, file: File) {
   return data as { id: string; original_filename: string; kind: string; has_thumbnail: boolean };
 }
 
-async function trashAttachment(token: string, attachmentId: string) {
+async function deleteAttachment(token: string, attachmentId: string) {
   return fetchJson(`/api/attachments/${attachmentId}`, { method: "DELETE" }, token) as Promise<{ ok: boolean }>;
 }
 
@@ -360,14 +356,13 @@ export const api = {
   createNote,
   getNote,
   patchNote,
-  trashNote,
-  restoreNote,
+  deleteNote,
   listVersions,
   snapshotNote,
   restoreVersion,
   setNoteTags,
   uploadAttachment,
-  trashAttachment,
+  deleteAttachment,
   attachmentUrl,
   attachmentThumbnailUrl,
   storageUsage,
