@@ -85,6 +85,13 @@ export function MemoWorkbench({
   const router = useRouter();
 
   const [error, setError] = useState<string | null>(null);
+  // 서버에 닿지 않는 동안 true. 이때는 기기에 내려받은 사본으로 동작한다.
+  const [offline, setOfflineState] = useState(false);
+  const offlineRef = useRef(false);
+  const setOffline = useCallback((next: boolean) => {
+    offlineRef.current = next;
+    setOfflineState(next);
+  }, []);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [notes, setNotes] = useState<NoteListItem[]>([]);
@@ -164,6 +171,8 @@ export function MemoWorkbench({
   const applyingRemoteRef = useRef(false);
   /** 저장 요청을 한 번에 하나씩만 보낸다 (동시에 두 개가 나가면 서로를 병합 대상으로 본다). */
   const flushChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** 직전 저장이 서버에 닿지 못했지만 초안은 기기에 남아 있음 (노트 전환을 막지 않는다). */
+  const draftKeptOnDeviceRef = useRef(false);
   /** 서버에 닿지 못했을 때 저장을 다시 시도하는 타이머. */
   const retryTimerRef = useRef<number | null>(null);
   const flushAutosaveRef = useRef<() => void>(() => {});
@@ -222,22 +231,37 @@ export function MemoWorkbench({
       } else if (e instanceof ApiError) {
         setError(String(e.message ?? e.payload ?? "요청 오류"));
       } else {
-        setError(String(e));
+        // fetch 자체가 실패 = 서버에 닿지 않음.
+        setOffline(true);
+        setError(
+          "서버에 연결할 수 없습니다. 오프라인에서는 내려받아 둔 노트를 열고 고치는 것만 됩니다 (새 노트·삭제·폴더 변경은 연결 후에).",
+        );
       }
     },
-    [onUnauthorized],
+    [onUnauthorized, setOffline],
   );
 
   const refreshMeta = useCallback(async () => {
     try {
       setError(null);
       const [folderRows, tagRows] = await Promise.all([api.listFolders(token), api.listTags(token)]);
-      setFolders(folderRows.filter((f) => !f.deleted_at));
-      setTags(tagRows.filter((t) => !t.deleted_at));
+      const liveFolders = folderRows.filter((f) => !f.deleted_at);
+      const liveTags = tagRows.filter((t) => !t.deleted_at);
+      setFolders(liveFolders);
+      setTags(liveTags);
+      void offlineStore.setKv("folders", liveFolders);
+      void offlineStore.setKv("tags", liveTags);
     } catch (e) {
-      handleApiError(e);
+      if (e instanceof ApiError) {
+        handleApiError(e);
+        return;
+      }
+      // 오프라인: 지난번에 받아 둔 폴더·태그를 쓴다.
+      setOffline(true);
+      setFolders((await offlineStore.getKv<Folder[]>("folders")) ?? []);
+      setTags((await offlineStore.getKv<Tag[]>("tags")) ?? []);
     }
-  }, [handleApiError, token]);
+  }, [handleApiError, setOffline, token]);
 
   const refreshUsage = useCallback(async () => {
     try {
@@ -312,9 +336,45 @@ export function MemoWorkbench({
       const rows = await api.listNotes(token, params);
       setNotes(rows);
     } catch (e) {
-      handleApiError(e);
+      if (e instanceof ApiError) {
+        handleApiError(e);
+        return;
+      }
+      // 오프라인: 기기에 내려받은 사본으로 같은 목록을 만든다.
+      setOffline(true);
+      const q = debouncedQuery.trim().toLowerCase();
+      const useTreeMode = mode === "active" && !selectedTagId;
+      const cached = await offlineStore.listNotes();
+      setNotes(
+        cached
+          .filter((n) => !n.deleted_at)
+          .filter((n) => (mode === "archive" ? n.is_archived : !n.is_archived))
+          .filter((n) => mode !== "favorite" || n.is_favorite)
+          .filter((n) => !selectedTagId || n.tags.some((t) => t.id === selectedTagId))
+          .filter((n) => q || useTreeMode || !selectedFolderId || n.folder_id === selectedFolderId)
+          .filter(
+            (n) =>
+              !q ||
+              n.title.toLowerCase().includes(q) ||
+              n.content.toLowerCase().includes(q) ||
+              n.tags.some((t) => `#${t.name.toLowerCase()}`.includes(q)),
+          )
+          .map((n) => ({
+            id: n.id,
+            title: n.title,
+            folder_id: n.folder_id,
+            is_favorite: n.is_favorite,
+            is_archived: n.is_archived,
+            created_at: n.created_at,
+            updated_at: n.updated_at,
+            deleted_at: n.deleted_at,
+            tags: n.tags,
+            revision: n.revision,
+            change_seq: n.change_seq,
+          })),
+      );
     }
-  }, [debouncedQuery, handleApiError, mode, selectedFolderId, selectedTagId, token]);
+  }, [debouncedQuery, handleApiError, mode, selectedFolderId, selectedTagId, setOffline, token]);
 
   useEffect(() => {
     void refreshMeta();
@@ -456,6 +516,7 @@ export function MemoWorkbench({
         const sameBody = nextContent === lastSentRef.current.content;
         if (sameTitle && sameBody && !forceSnapshot) return true;
 
+        draftKeptOnDeviceRef.current = false;
         const base = baseRef.current;
         // 보내기 전에 기기에 먼저 적어 둔다. 서버에 닿지 못한 채 탭을 닫아도 글이
         // 남고, 다음에 연결되면 pushPendingDrafts 가 올린다.
@@ -482,6 +543,7 @@ export function MemoWorkbench({
             base_content: base.content,
           });
           void reloadNotes();
+          void offlineStore.putNote(updated);
           // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
           if (activeNoteIdRef.current !== noteId) {
             await offlineStore.deleteDraft(noteId);
@@ -528,6 +590,8 @@ export function MemoWorkbench({
           }
           // 서버에 닿지 못함(오프라인·서버 꺼짐). 글은 기기에 보관돼 있으니 경고 대신
           // 상태만 바꾸고, 연결될 때까지 주기적으로 다시 시도한다.
+          draftKeptOnDeviceRef.current = true;
+          setOffline(true);
           setSaveState("offline");
           if (retryTimerRef.current === null) {
             retryTimerRef.current = window.setTimeout(() => {
@@ -542,7 +606,7 @@ export function MemoWorkbench({
       flushChainRef.current = chained;
       return chained;
     },
-    [handleApiError, reloadNotes, token],
+    [handleApiError, reloadNotes, setOffline, token],
   );
 
   /**
@@ -563,6 +627,8 @@ export function MemoWorkbench({
         lastSentRef.current = { ...lastSentRef.current, overlayKey: sig };
         return true;
       } catch (e) {
+        // 오프라인에서는 그림을 보관하지 못한다(아직 미지원). 노트 전환은 막지 않는다.
+        if (!(e instanceof ApiError)) return true;
         handleApiError(e);
         return false;
       }
@@ -650,12 +716,8 @@ export function MemoWorkbench({
         const prevNote = activeNoteRef.current;
         if (prevId && prevNote && !prevNote.deleted_at) {
           const saved = await flushDraftForNote(prevId, prevNote, false);
-          if (!saved) {
-            setError(
-              "서버에 연결할 수 없어 다른 노트를 열지 못했습니다. 작성 중인 내용은 이 기기에 보관되며, 연결되면 자동으로 저장됩니다.",
-            );
-            return;
-          }
+          // 서버에 닿지 못했어도 초안이 기기에 남아 있으면 전환을 막지 않는다.
+          if (!saved && !draftKeptOnDeviceRef.current) return;
           if (!(await flushOverlayForNote(prevId))) return;
         }
 
@@ -675,33 +737,76 @@ export function MemoWorkbench({
         // 제목 입력칸이 잠깐 잘못 보였다가 바뀌는 현상 방지 — 목록에 있는 제목으로 즉시 맞춤.
         const listHit = notesRef.current.find((n) => n.id === id);
         const optimisticTitle = listHit?.title ?? "";
+        const prevTitle = draftTitleRef.current;
         draftTitleRef.current = optimisticTitle;
         setTitle(optimisticTitle);
 
-        const note = await api.getNote(token, id);
+        let note: NoteDetail;
+        try {
+          note = await api.getNote(token, id);
+          void offlineStore.putNote(note);
+        } catch (e) {
+          if (e instanceof ApiError) throw e;
+          // 오프라인: 기기에 내려받은 사본으로 연다.
+          setOffline(true);
+          const cached = await offlineStore.getNote(id);
+          if (!cached) {
+            setActiveNoteId(prevId);
+            draftTitleRef.current = prevTitle;
+            setTitle(prevTitle);
+            setError("이 노트는 아직 이 기기에 내려받지 못해 오프라인에서 열 수 없습니다.");
+            return;
+          }
+          note = cached;
+        }
+        // 서버에 못 보낸 편집이 기기에 남아 있으면 그 내용을 이어서 보여준다.
+        const pending = await offlineStore.getDraft(id);
+        const shownTitle = pending ? pending.title : note.title;
+        const shownContent = pending ? pending.content : note.content;
         setActiveNote(note);
-        draftTitleRef.current = note.title;
-        draftContentRef.current = note.content;
-        setTitle(note.title);
-        setContent(note.content);
+        draftTitleRef.current = shownTitle;
+        draftContentRef.current = shownContent;
+        setTitle(shownTitle);
+        setContent(shownContent);
         const incomingOverlay = Array.isArray(note.overlay_strokes) ? note.overlay_strokes : [];
         setOverlayStrokes(incomingOverlay);
         // 다른 노트로 옮기면 그리기 모드는 해제 (실수로 새 노트에 그리는 것 방지).
         setDrawingMode(false);
-        lastSentRef.current = {
-          title: note.title,
-          content: note.content,
-          overlayKey: overlaySignature(incomingOverlay),
-        };
-        baseRef.current = { revision: note.revision, title: note.title, content: note.content };
-        setSaveState("saved");
-        const vers = await api.listVersions(token, id);
-        setVersions(vers);
+        if (pending) {
+          // 기준점은 초안이 만들어질 때의 서버 상태. 그 뒤 서버가 바뀌었으면 저장 때 병합된다.
+          lastSentRef.current = {
+            title: pending.baseTitle,
+            content: pending.baseContent,
+            overlayKey: overlaySignature(incomingOverlay),
+          };
+          baseRef.current = {
+            revision: pending.baseRevision,
+            title: pending.baseTitle,
+            content: pending.baseContent,
+          };
+          setSaveState(offlineRef.current ? "offline" : "dirty");
+          // activeNote 가 반영된 다음 렌더의 저장 함수로 올린다.
+          window.setTimeout(() => flushAutosaveRef.current(), 100);
+        } else {
+          lastSentRef.current = {
+            title: note.title,
+            content: note.content,
+            overlayKey: overlaySignature(incomingOverlay),
+          };
+          baseRef.current = { revision: note.revision, title: note.title, content: note.content };
+          setSaveState("saved");
+        }
+        try {
+          setVersions(await api.listVersions(token, id));
+        } catch (e) {
+          if (e instanceof ApiError) throw e;
+          setVersions([]);
+        }
       } catch (e) {
         handleApiError(e);
       }
     },
-    [flushDraftForNote, flushOverlayForNote, handleApiError, token],
+    [flushDraftForNote, flushOverlayForNote, handleApiError, setOffline, token],
   );
 
   // 그림 레이어 stroke 가 바뀌면 디바운스 후 서버로 패치한다. 본문 자동 저장과
@@ -731,7 +836,7 @@ export function MemoWorkbench({
             : prev,
         );
       } catch (e) {
-        handleApiError(e);
+        if (e instanceof ApiError) handleApiError(e);
       }
     }, 700);
     return () => {
@@ -1012,6 +1117,7 @@ export function MemoWorkbench({
     } catch {
       /* ignore */
     }
+    await offlineStore.clearCache();
     onUnauthorized();
     router.replace("/login");
   };
@@ -1737,10 +1843,51 @@ export function MemoWorkbench({
     }
   }
 
+  // ---------- 오프라인 사본: 모든 노트를 이 기기에 내려받아 둔다 ----------
+
+  const cacheBusyRef = useRef(false);
+  /**
+   * 서버와 비교해 없는/낡은 노트 사본만 받아 온다. 처음엔 전체를 받고, 이후엔
+   * 마지막으로 받은 위치(cacheSeq) 이후 바뀐 것만 받는다.
+   */
+  const refreshCache = useCallback(async () => {
+    if (cacheBusyRef.current) return;
+    cacheBusyRef.current = true;
+    try {
+      const since = await offlineStore.getKv<number>("cacheSeq");
+      let nextSeq: number;
+      let rows: NoteListItem[];
+      if (since === undefined) {
+        // 위치를 먼저 받고 목록을 읽는다 — 그 사이 변경은 다음 번에 다시 잡힌다.
+        nextSeq = (await api.syncChanges(token)).seq;
+        rows = [
+          ...(await api.listNotes(token, { archived: false })),
+          ...(await api.listNotes(token, { archived: true })),
+        ];
+      } else {
+        const res = await api.syncChanges(token, since);
+        nextSeq = res.seq;
+        rows = res.notes;
+        for (const id of res.deleted) await offlineStore.deleteNote(id);
+      }
+      const have = new Map((await offlineStore.listNotes()).map((n) => [n.id, n.change_seq]));
+      for (const row of rows) {
+        if (have.get(row.id) === row.change_seq) continue;
+        await offlineStore.putNote(await api.getNote(token, row.id));
+      }
+      await offlineStore.setKv("cacheSeq", nextSeq);
+    } catch {
+      /* 오프라인이거나 중간에 끊김 — 받은 데까지만 두고 다음에 이어서 */
+    } finally {
+      cacheBusyRef.current = false;
+    }
+  }, [token]);
+
   // ---------- 동기화: 다른 기기의 변경을 몇 초 간격으로 가져온다 ----------
 
   /** 다른 곳에서 바뀐 활성 노트를 화면에 반영한다. 편집 중인 본문은 건드리지 않는다. */
   function applyRemoteNote(fresh: NoteDetail): void {
+    void offlineStore.putNote(fresh);
     setActiveNote(fresh);
     // 그림: 아직 저장 안 된 내 stroke 가 없을 때만 원격 것으로 교체.
     const remoteOverlay = Array.isArray(fresh.overlay_strokes) ? fresh.overlay_strokes : [];
@@ -1772,9 +1919,11 @@ export function MemoWorkbench({
       // 것이라 그 사이 변경을 놓쳤을 수 있으므로 한 번 다시 읽는다.
       void refreshMeta();
       void reloadNotes();
+      void refreshCache();
       return;
     }
     if (prevSeq === res.seq) return;
+    void refreshCache();
 
     const activeId = activeNoteIdRef.current;
     if (activeId && res.deleted.includes(activeId)) {
@@ -1807,6 +1956,18 @@ export function MemoWorkbench({
     }
   }
 
+  /** 서버에 다시 닿았을 때: 밀린 편집을 올리고 목록을 서버 기준으로 되돌린다. */
+  function handleBackOnline(): void {
+    setOffline(false);
+    setError(null);
+    void pushPendingDrafts();
+    flushAutosaveRef.current();
+    void refreshMeta();
+    void reloadNotes();
+  }
+  const backOnlineRef = useRef(handleBackOnline);
+  backOnlineRef.current = handleBackOnline;
+
   // 폴링 루프는 한 번만 만들고, 처리 함수는 ref 로 최신 클로저를 읽는다.
   const handleSyncChangesRef = useRef(handleSyncChanges);
   handleSyncChangesRef.current = handleSyncChanges;
@@ -1823,11 +1984,17 @@ export function MemoWorkbench({
         // 탭이 가려져 있으면 쉬고, 다시 보이는 순간 visibilitychange 가 바로 깨운다.
         if (document.visibilityState === "visible") {
           const res = await api.syncChanges(token, syncSeqRef.current ?? undefined);
-          if (!stopped) await handleSyncChangesRef.current(res);
+          if (stopped) return;
+          if (offlineRef.current) backOnlineRef.current();
+          await handleSyncChangesRef.current(res);
         }
       } catch (e) {
-        // 네트워크가 잠깐 끊긴 것은 조용히 넘기고 다음 주기에 다시 시도한다.
-        if (e instanceof ApiError && e.status === 401) onUnauthorized();
+        if (e instanceof ApiError) {
+          if (e.status === 401) onUnauthorized();
+        } else {
+          // 서버에 닿지 않음 → 오프라인 모드. 다음 주기에 다시 확인한다.
+          setOffline(true);
+        }
       } finally {
         running = false;
         if (!stopped) timer = window.setTimeout(tick, INTERVAL_MS);
@@ -1845,7 +2012,7 @@ export function MemoWorkbench({
       if (timer) window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [onUnauthorized, token]);
+  }, [onUnauthorized, setOffline, token]);
 
   function openCommandPalette() {
     setCommandQuery("");
@@ -2386,6 +2553,11 @@ export function MemoWorkbench({
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-white">
+      {offline ? (
+        <div className="border-b border-slate-300 bg-slate-100 px-4 py-1.5 text-[12px] text-slate-700">
+          오프라인 — 이 기기에 내려받은 사본으로 작업 중입니다. 고친 내용은 연결되면 서버에 반영됩니다.
+        </div>
+      ) : null}
       {error ? (
         <div className="border-b border-amber-400/40 bg-amber-50 px-4 py-2 text-[13px] text-amber-900">
           ⚠️ {error}

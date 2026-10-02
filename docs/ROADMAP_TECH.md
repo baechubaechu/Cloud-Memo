@@ -36,6 +36,8 @@
 않게 바꿨다. 아래는 브라우저에서 손으로 확인하지 못한 항목.
 
 - [ ] 한글 IME 입력 — 빠르게 치다 멈췄다 다시 칠 때 마지막 글자가 빠지지 않는지.
+- [ ] 오프라인: 실제로 네트워크를 끊고 — 여러 노트를 오가며 편집, 탭 닫았다 열기,
+  재연결 후 반영. 다른 기기에서 지운 노트의 초안이 「(복구)」 노트로 살아나는지.
 - [ ] 동기화: 실제 기기 두 대(또는 브라우저 두 개)로 동시 편집 — 자동 검증은 한 탭 +
   API 호출로 다른 기기를 흉내 낸 것. 한글 조합 중 원격 변경이 들어올 때도 확인.
 - [ ] 이미지 붙여넣기(`Ctrl+V`)·드래그 삽입 — 캐럿 위치에 마커가 들어가는지.
@@ -102,9 +104,27 @@
   같은 이름은 재사용).
 - [ ] 태그 삭제·이름 변경 UI 없음.
 
-구조
-- [ ] `Workbench.tsx`(약 1980줄) 커스텀 훅 분리 — `useAutosave`, `useAudioRecorder`,
-  슬래시 메뉴, 폴더·노트 조작. 위 항목 처리 후.
+구조 — 큰 파일 나누기 (2026-10-03 기준 줄 수)
+- [ ] **`Workbench.tsx` 2622줄** — 동기화·오프라인이 들어오며 다시 커졌다. 상태를
+  한 컴포넌트가 다 들고 있어 커스텀 훅으로 나누는 게 맞다. 후보(위에서부터 독립적인 순):
+  - `useAudioRecorder` — 녹음 상태·MediaRecorder (다른 상태와 거의 무관).
+  - `useSlashMenu` — 슬래시 메뉴 상태·키보드·`updateSlashMenuFromView`.
+  - `useNoteSync` — 폴링 루프, `handleSyncChanges`, `applyRemoteNote`, `refreshCache`,
+    오프라인/온라인 전환.
+  - `useAutosave` — `flushDraftForNote`, 기준점(`baseRef`)·`lastSentRef`, 재시도,
+    `pushPendingDrafts`, 그림 저장. 가장 얽혀 있어 마지막에.
+  - `useSidebarTree` — 폴더·노트 이동/이름 변경/삭제, DnD, 멀티선택.
+  - 오프라인 목록 만들기(사본 → 목록 필터)는 순수 함수로 `workbenchHelpers.ts` 에.
+- [ ] **`WorkbenchSidebar.tsx` 850줄** — props 40여 개. 노트 행·폴더 행을 컴포넌트로
+  빼고, 루트 드롭 처리(같은 코드가 두 번)를 한 함수로. `SidebarContext` 로 props 묶기.
+- [ ] **`WorkbenchEditor.tsx` 619줄** — 메타 툴바 / 그리기 툴바 / 태그 줄 / 슬래시 메뉴를
+  각각 컴포넌트로.
+- [ ] `web/src/lib/api.ts` 396줄 — 타입 정의(`types.ts`)와 호출 함수 분리. 급하지 않음.
+- [ ] `api/app/routers/notes.py` 393줄 — 버전 관련 엔드포인트를 `versions.py` 라우터로,
+  저장 병합 로직을 `services/` 로. 급하지 않음.
+- [ ] `OverlayDrawingLayer.tsx` 355줄 — 경로 계산·히트 테스트 순수 함수를 별도 파일로.
+- 나눌 때 원칙: 동작을 바꾸지 않는 이동만 한 커밋에. 프런트 테스트가 없으므로 훅 하나
+  옮길 때마다 브라우저로 저장·전환·동기화를 확인.
 
 - [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1·2·3·4차 분리 완료)*
   - 이전 라운드에서 한 번 쪼갰지만, 위키링크/슬래시 메뉴/그림 레이어/오디오/
