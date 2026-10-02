@@ -7,7 +7,8 @@
 
 - **경로:** `C:\Users\user\CloudMemo` (이전: `.cursor\projects\empty-window\cloud-memo` 에서 이동)
 - **브랜치:** `main`
-- **마지막 커밋:** `b3983a0` — `fix(memo): title autosave/focus and Pretendard; expand roadmap`
+- **마지막 작업:** 2026-10-03 — 자동 저장·노트 전환 데이터 손실 수정, 휴지통 없는 삭제,
+  태그 생성 UI. 상세는 [`ROADMAP_CHANGELOG.md`](./ROADMAP_CHANGELOG.md) 마지막 두 줄.
 
 ## 이 채팅에서 다룬 큰 줄기
 
