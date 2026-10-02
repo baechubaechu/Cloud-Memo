@@ -10,6 +10,11 @@
 - **마지막 작업:** 2026-10-03 — 자동 저장·노트 전환 데이터 손실 수정, 휴지통 없는 삭제,
   태그 생성 UI. 상세는 [`ROADMAP_CHANGELOG.md`](./ROADMAP_CHANGELOG.md) 마지막 두 줄.
 
+## 다음 세션 시작점
+
+새 작업 전에 [`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md) 맨 위 **「다음에 켜자마자 — 브라우저로 직접
+확인」** 목록부터 본다 (자동 저장·동기화·오프라인을 사람이 직접 확인).
+
 ## 이 채팅에서 다룬 큰 줄기
 
 - Cloud Memo: Obsidian 스타일 마크다운 에디터, 사이드바/DnD/멀티선택, 위키링크 재설계(CodeMirror autocomplete), 명령 팔레트·슬래시 등.
