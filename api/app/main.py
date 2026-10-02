@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import assert_production_safe, settings
-from app.routers import ai_jobs, attachments, auth, exports, folders, notes, search, storage, tags
+from app.routers import ai_jobs, attachments, auth, exports, folders, notes, search, storage, sync, tags
 
 # APP_ENV=production 일 때 약한 기본값(JWT_SECRET 등)을 fail-fast 로 잡아낸다.
 assert_production_safe()
@@ -32,3 +32,4 @@ app.include_router(search.router, prefix="/api")
 app.include_router(storage.router, prefix="/api")
 app.include_router(exports.router, prefix="/api")
 app.include_router(ai_jobs.router, prefix="/api")
+app.include_router(sync.router, prefix="/api")

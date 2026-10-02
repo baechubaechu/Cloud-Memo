@@ -20,7 +20,8 @@ from sqlalchemy.orm import Session, defer, selectinload
 from app.database import get_db
 from app.deps import CurrentUser
 from app.models import Attachment, Note, Tag
-from app.schemas import NoteListItem, TagOut
+from app.routers.notes import list_item
+from app.schemas import NoteListItem
 from app.services.search_query import split_query as _split_query
 
 router = APIRouter(tags=["search"])
@@ -82,17 +83,4 @@ def search(
     stmt = stmt.order_by(Note.updated_at.desc()).limit(limit)
 
     rows = list(db.execute(stmt).unique().scalars().all())
-    return [
-        NoteListItem(
-            id=n.id,
-            title=n.title,
-            folder_id=n.folder_id,
-            is_favorite=n.is_favorite,
-            is_archived=n.is_archived,
-            created_at=n.created_at,
-            updated_at=n.updated_at,
-            deleted_at=n.deleted_at,
-            tags=[TagOut.model_validate(t) for t in n.tags if t.deleted_at is None],
-        )
-        for n in rows
-    ]
+    return [list_item(n) for n in rows]

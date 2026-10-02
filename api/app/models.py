@@ -106,6 +106,11 @@ class Note(Base):
         server_default=jsonb_default_empty_array(),
     )
 
+    # 동기화: revision 은 제목·본문 변경마다 +1 (저장 시 병합 판단용),
+    # change_seq 는 어떤 변경이든 전역 카운터 값을 찍는다 (폴링용).
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    change_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+
     folder: Mapped[Optional[Folder]] = relationship(back_populates="notes")
     tags: Mapped[List[Tag]] = relationship(secondary=note_tags, back_populates="notes")
     attachments: Mapped[List["Attachment"]] = relationship(back_populates="note")
@@ -156,6 +161,28 @@ class Attachment(Base):
     meta: Mapped[dict] = mapped_column("metadata_json", JSONB, nullable=False, default=dict)
 
     note: Mapped["Note"] = relationship(back_populates="attachments")
+
+
+class SyncCounter(Base):
+    """전역 변경 카운터 (id=1 단일 행)."""
+
+    __tablename__ = "sync_counter"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    # 폴더·태그가 마지막으로 바뀐 seq.
+    meta_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+
+
+class NoteTombstone(Base):
+    """영구 삭제된 노트의 흔적 — 다른 기기가 삭제를 알 수 있게 남긴다."""
+
+    __tablename__ = "note_tombstones"
+
+    note_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AiJob(Base):

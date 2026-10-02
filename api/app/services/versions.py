@@ -1,7 +1,7 @@
 """Versioning helpers.
 
 `reason` follows the spec vocabulary:
-    manual, before_delete, before_ai_edit, restore, periodic_autosave
+    manual, before_delete, before_ai_edit, restore, periodic_autosave, before_merge
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ VersionReason = Literal[
     "before_ai_edit",
     "restore",
     "periodic_autosave",
+    "before_merge",
 ]
 
 

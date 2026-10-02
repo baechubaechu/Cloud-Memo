@@ -70,6 +70,11 @@ class NoteUpdate(BaseModel):
     is_favorite: Optional[bool] = None
     is_archived: Optional[bool] = None
     force_snapshot: bool = False
+    # 동기화: 클라이언트가 마지막으로 서버와 맞췄던 상태. base_revision 이 서버의
+    # 현재 revision 과 다르면 base_title/base_content 를 기준으로 3-way 병합한다.
+    base_revision: Optional[int] = None
+    base_title: Optional[str] = None
+    base_content: Optional[str] = None
     # 본문 위 자유 그림 레이어의 stroke 배열. None 이면 미수정.
     overlay_strokes: Optional[List[dict]] = None
 
@@ -97,6 +102,8 @@ class NoteListItem(BaseModel):
     updated_at: datetime
     deleted_at: Optional[datetime] = None
     tags: List[TagOut] = []
+    revision: int = 1
+    change_seq: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -115,6 +122,8 @@ class NoteDetail(BaseModel):
     tags: List[TagOut] = []
     attachments: List[AttachmentOut] = []
     overlay_strokes: List[dict] = []
+    revision: int = 1
+    change_seq: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -138,6 +147,16 @@ class RestoreVersionBody(BaseModel):
 
 class NoteTagsBody(BaseModel):
     tag_ids: List[uuid.UUID]
+
+
+class SyncChanges(BaseModel):
+    """`since` 이후 바뀐 것. 클라이언트는 다음 폴링에 `seq` 를 다시 보낸다."""
+
+    seq: int
+    # 폴더·태그가 바뀜 → 클라이언트는 폴더/태그/노트 목록을 통째로 다시 읽는다.
+    meta_changed: bool = False
+    notes: List[NoteListItem] = []
+    deleted: List[uuid.UUID] = []
 
 
 class StorageUsage(BaseModel):

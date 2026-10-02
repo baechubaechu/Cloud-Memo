@@ -19,6 +19,7 @@ from app.services.storage import (
     resolve_storage_path,
     write_thumbnail_jpeg,
 )
+from app.services.sync import touch_note
 
 router = APIRouter(tags=["attachments"])
 
@@ -86,6 +87,7 @@ def upload_attachment(
         meta={},
     )
     db.add(att)
+    touch_note(db, n)
     db.commit()
     db.refresh(att)
     return {
@@ -104,7 +106,10 @@ def delete_attachment(attachment_id: Annotated[str, Path()], db: Db, me: Current
     if not a or a.user_id != me.id:
         raise HTTPException(status_code=404, detail="Not found")
     keys = [k for k in (a.storage_path, a.thumbnail_path) if k]
+    note = db.get(Note, a.note_id)
     db.delete(a)
+    if note is not None:
+        touch_note(db, note)
     db.commit()
     for key in keys:
         try:

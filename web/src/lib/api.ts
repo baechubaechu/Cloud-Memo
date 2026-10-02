@@ -38,6 +38,10 @@ export type NoteListItem = {
   updated_at: string;
   deleted_at?: string | null;
   tags: Tag[];
+  /** 제목·본문이 바뀔 때마다 +1. 저장 시 병합 판단에 쓴다. */
+  revision: number;
+  /** 이 노트에 마지막으로 변경이 생긴 전역 seq. */
+  change_seq: number;
 };
 
 export type OverlayStrokeTool = "pen" | "highlighter";
@@ -66,6 +70,16 @@ export type NoteDetail = {
   tags: Tag[];
   attachments: Attachment[];
   overlay_strokes: OverlayStroke[];
+  revision: number;
+  change_seq: number;
+};
+
+/** `GET /api/sync/changes` 응답 — `since` 이후 다른 곳에서 바뀐 것. */
+export type SyncChanges = {
+  seq: number;
+  meta_changed: boolean;
+  notes: NoteListItem[];
+  deleted: string[];
 };
 
 export type NoteVersion = {
@@ -73,7 +87,7 @@ export type NoteVersion = {
   version_index: number;
   title: string;
   content: string;
-  reason: "manual" | "before_delete" | "before_ai_edit" | "restore" | "periodic_autosave";
+  reason: "manual" | "before_delete" | "before_ai_edit" | "restore" | "periodic_autosave" | "before_merge";
   created_at: string;
 };
 
@@ -249,6 +263,10 @@ async function patchNote(
     is_archived: boolean;
     force_snapshot: boolean;
     overlay_strokes: OverlayStroke[];
+    /** 마지막으로 서버와 맞췄던 상태. revision 이 어긋나면 서버가 3-way 병합한다. */
+    base_revision: number;
+    base_title: string;
+    base_content: string;
   }>,
 ) {
   return fetchJson(
@@ -305,6 +323,11 @@ function attachmentUrl(id: string) {
 
 function attachmentThumbnailUrl(id: string) {
   return `${API_URL}/api/attachments/${id}/thumbnail`;
+}
+
+async function syncChanges(token: string, since?: number) {
+  const qs = since === undefined ? "" : `?since=${since}`;
+  return fetchJson(`/api/sync/changes${qs}`, {}, token) as Promise<SyncChanges>;
 }
 
 async function storageUsage(token: string) {
@@ -366,6 +389,7 @@ export const api = {
   attachmentUrl,
   attachmentThumbnailUrl,
   storageUsage,
+  syncChanges,
   listAiJobs,
   createAiJob,
   downloadMarkdownExport,

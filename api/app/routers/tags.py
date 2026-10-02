@@ -10,6 +10,7 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import Tag
 from app.schemas import TagCreate, TagOut
+from app.services.sync import touch_meta
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -36,6 +37,7 @@ def list_tags(db: Db, me: CurrentUser, trash: bool = False):
 def create_tag(body: TagCreate, db: Db, me: CurrentUser):
     row = Tag(user_id=me.id, name=body.name.strip(), meta={})
     db.add(row)
+    touch_meta(db)
     db.commit()
     db.refresh(row)
     return TagOut(id=row.id, name=row.name, created_at=row.created_at, deleted_at=row.deleted_at)
@@ -48,6 +50,7 @@ def trash_tag(tag_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     if not tag or tag.user_id != me.id:
         raise HTTPException(status_code=404, detail="Not found")
     tag.deleted_at = datetime.now(timezone.utc)
+    touch_meta(db)
     db.commit()
     db.refresh(tag)
     return TagOut(id=tag.id, name=tag.name, created_at=tag.created_at, deleted_at=tag.deleted_at)
@@ -60,6 +63,7 @@ def restore_tag(tag_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     if not tag or tag.user_id != me.id:
         raise HTTPException(status_code=404, detail="Not found")
     tag.deleted_at = None
+    touch_meta(db)
     db.commit()
     db.refresh(tag)
     return TagOut(id=tag.id, name=tag.name, created_at=tag.created_at, deleted_at=tag.deleted_at)

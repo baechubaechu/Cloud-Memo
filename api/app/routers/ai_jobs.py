@@ -18,6 +18,7 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import AiJob, Note
 from app.schemas import AiJobCreate, AiJobOut
+from app.services.sync import touch_note
 from app.services.versions import maybe_snapshot_before_update
 
 router = APIRouter(prefix="/ai-jobs", tags=["ai"])
@@ -108,6 +109,7 @@ def update_job(body: AiJobUpdate, job_id: Annotated[str, Path()], db: Db, me: Cu
                 note.title = new_title
             if isinstance(new_content, str):
                 note.content = new_content
+            touch_note(db, note, text_changed=True)
 
     db.commit()
     db.refresh(j)

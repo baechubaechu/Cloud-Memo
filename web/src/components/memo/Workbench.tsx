@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
+import { Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { IconArchive, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
 import {
@@ -48,6 +49,7 @@ import type {
   NoteVersion,
   OverlayStroke,
   StorageUsage,
+  SyncChanges,
   Tag,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
@@ -148,6 +150,21 @@ export function MemoWorkbench({
     content: "",
     overlayKey: "",
   });
+  /**
+   * 동기화 기준점: 마지막으로 서버와 일치했던 제목·본문과 그때의 revision.
+   * 저장할 때 같이 보내고, 서버 revision 이 다르면 서버가 이걸 기준으로 병합한다.
+   */
+  const baseRef = useRef<{ revision: number; title: string; content: string }>({
+    revision: 0,
+    title: "",
+    content: "",
+  });
+  /** 원격 변경을 에디터에 넣는 중 — 이때의 onChange 는 사용자 입력이 아니므로 저장을 예약하지 않는다. */
+  const applyingRemoteRef = useRef(false);
+  /** 저장 요청을 한 번에 하나씩만 보낸다 (동시에 두 개가 나가면 서로를 병합 대상으로 본다). */
+  const flushChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** 동기화 폴링 위치. null 이면 아직 첫 응답 전. */
+  const syncSeqRef = useRef<number | null>(null);
   /** setState 직후 디바운스된 flushAutosave 가 옛 title/content 클로저를 읽는 것을 막기 위한 동기 초안 */
   const draftTitleRef = useRef("");
   const draftContentRef = useRef("");
@@ -389,47 +406,110 @@ export function MemoWorkbench({
     if (view) draftContentRef.current = view.state.doc.toString();
   }
 
-  const flushDraftForNote = useCallback(
-    async (noteId: string, note: NoteDetail, forceSnapshot?: boolean): Promise<boolean> => {
-      if (!noteId || note.deleted_at) return true;
-      syncDraftFromDom();
-      const nextTitle = draftTitleRef.current;
-      const nextContent = draftContentRef.current;
-      const sameTitle = nextTitle === lastSentRef.current.title;
-      const sameBody = nextContent === lastSentRef.current.content;
-      if (sameTitle && sameBody && !forceSnapshot) return true;
-
-      try {
-        setSaveState("saving");
-        // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
-        // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
-        const updated = await api.patchNote(token, noteId, {
-          title: nextTitle,
-          content: nextContent,
-          force_snapshot: !!forceSnapshot,
-        });
-        // 응답으로 제목·본문을 덮어쓰지 않는다. 요청~응답 사이에 입력한 글자가
-        // 서버의 옛 본문으로 되돌려지기 때문. 보낸 값만 "저장됨" 기준으로 기록.
-        lastSentRef.current = {
-          ...lastSentRef.current,
-          title: nextTitle,
-          content: nextContent,
-        };
-        void reloadNotes();
-        // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
-        if (activeNoteIdRef.current !== noteId) return true;
-        setActiveNote(updated);
-        const stillClean =
-          draftTitleRef.current === nextTitle && draftContentRef.current === nextContent;
-        setSaveState(stillClean ? "saved" : "dirty");
-        const vers = await api.listVersions(token, noteId);
-        if (activeNoteIdRef.current === noteId) setVersions(vers);
-        return true;
-      } catch (e) {
-        handleApiError(e);
-        setSaveState("dirty");
-        return false;
+  /**
+   * 에디터 본문을 `next` 로 바꾼다. 앞뒤 공통 부분은 건드리지 않고 달라진 가운데만
+   * 교체해서 캐럿·스크롤이 유지되게 하고, undo 히스토리에는 넣지 않는다
+   * (Ctrl+Z 가 다른 기기의 수정을 되돌리면 안 된다).
+   */
+  function replaceEditorDoc(next: string): void {
+    draftContentRef.current = next;
+    const view = editorViewRef.current;
+    if (view) {
+      const cur = view.state.doc.toString();
+      if (cur !== next) {
+        const max = Math.min(cur.length, next.length);
+        let start = 0;
+        while (start < max && cur.charCodeAt(start) === next.charCodeAt(start)) start += 1;
+        let end = 0;
+        while (
+          end < max - start &&
+          cur.charCodeAt(cur.length - 1 - end) === next.charCodeAt(next.length - 1 - end)
+        ) {
+          end += 1;
+        }
+        applyingRemoteRef.current = true;
+        try {
+          view.dispatch({
+            changes: { from: start, to: cur.length - end, insert: next.slice(start, next.length - end) },
+            annotations: Transaction.addToHistory.of(false),
+          });
+        } finally {
+          applyingRemoteRef.current = false;
+        }
       }
+    }
+    setContent(next);
+  }
+
+  const flushDraftForNote = useCallback(
+    (noteId: string, note: NoteDetail, forceSnapshot?: boolean): Promise<boolean> => {
+      const run = async (): Promise<boolean> => {
+        if (!noteId || note.deleted_at) return true;
+        syncDraftFromDom();
+        const nextTitle = draftTitleRef.current;
+        const nextContent = draftContentRef.current;
+        const sameTitle = nextTitle === lastSentRef.current.title;
+        const sameBody = nextContent === lastSentRef.current.content;
+        if (sameTitle && sameBody && !forceSnapshot) return true;
+
+        try {
+          setSaveState("saving");
+          // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
+          // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
+          const base = baseRef.current;
+          const updated = await api.patchNote(token, noteId, {
+            title: nextTitle,
+            content: nextContent,
+            force_snapshot: !!forceSnapshot,
+            base_revision: base.revision,
+            base_title: base.title,
+            base_content: base.content,
+          });
+          void reloadNotes();
+          // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
+          if (activeNoteIdRef.current !== noteId) return true;
+
+          const merged = updated.content !== nextContent || updated.title !== nextTitle;
+          const stillClean =
+            draftTitleRef.current === nextTitle && draftContentRef.current === nextContent;
+          if (!merged) {
+            // 보낸 그대로 저장됨. (응답으로 화면을 덮어쓰지는 않는다 — 요청~응답
+            // 사이에 입력한 글자가 되돌려지기 때문.)
+            lastSentRef.current = { ...lastSentRef.current, title: nextTitle, content: nextContent };
+            baseRef.current = { revision: updated.revision, title: nextTitle, content: nextContent };
+          } else if (stillClean) {
+            // 다른 기기의 변경과 병합됨 + 그 사이 추가 입력 없음 → 병합 결과를 화면에 반영.
+            replaceEditorDoc(updated.content);
+            draftTitleRef.current = updated.title;
+            setTitle(updated.title);
+            lastSentRef.current = { ...lastSentRef.current, title: updated.title, content: updated.content };
+            baseRef.current = { revision: updated.revision, title: updated.title, content: updated.content };
+          } else {
+            // 병합됐는데 그 사이 더 입력함 → 화면은 그대로 두고 기준점을 "방금 보낸 것"
+            // 으로 둔다. revision 은 일부러 낡은 값을 유지해서, 다음 저장 때 서버가
+            // (방금 보낸 것 → 지금 화면) 변경분만 병합 결과 위에 얹게 한다.
+            lastSentRef.current = { ...lastSentRef.current, title: nextTitle, content: nextContent };
+            baseRef.current = { revision: base.revision, title: nextTitle, content: nextContent };
+          }
+          setActiveNote(updated);
+          setSaveState(
+            draftTitleRef.current === lastSentRef.current.title &&
+              draftContentRef.current === lastSentRef.current.content
+              ? "saved"
+              : "dirty",
+          );
+          const vers = await api.listVersions(token, noteId);
+          if (activeNoteIdRef.current === noteId) setVersions(vers);
+          return true;
+        } catch (e) {
+          handleApiError(e);
+          setSaveState("dirty");
+          return false;
+        }
+      };
+      const chained = flushChainRef.current.then(run, run);
+      flushChainRef.current = chained;
+      return chained;
     },
     [handleApiError, reloadNotes, token],
   );
@@ -519,6 +599,7 @@ export function MemoWorkbench({
           content: note.content,
           overlayKey: overlaySignature(incomingOverlay),
         };
+        baseRef.current = { revision: note.revision, title: note.title, content: note.content };
         setSaveState("saved");
         const vers = await api.listVersions(token, id);
         setVersions(vers);
@@ -550,7 +631,11 @@ export function MemoWorkbench({
         };
         // overlay_strokes 만 갱신된 응답으로 activeNote 의 다른 필드를 덮어쓰면
         // 사용자가 그동안 입력한 title/content 가 사라질 수 있다. 메타만 갱신.
-        setActiveNote((prev) => (prev ? { ...prev, overlay_strokes: updated.overlay_strokes } : prev));
+        setActiveNote((prev) =>
+          prev
+            ? { ...prev, overlay_strokes: updated.overlay_strokes, change_seq: updated.change_seq }
+            : prev,
+        );
       } catch (e) {
         handleApiError(e);
       }
@@ -620,19 +705,27 @@ export function MemoWorkbench({
         lines[item.lineIndex] =
           rawLine.slice(0, parsed.stateOffset) + nextChar + rawLine.slice(parsed.stateOffset + 1);
         const nextContent = lines.join("\n");
+        const nextTitle = isActive ? draftTitleRef.current : note.title;
+        const base = isActive
+          ? baseRef.current
+          : { revision: note.revision, title: note.title, content: note.content };
         const updated = await api.patchNote(token, item.noteId, {
           content: nextContent,
-          title: isActive ? draftTitleRef.current : note.title,
+          title: nextTitle,
+          base_revision: base.revision,
+          base_title: base.title,
+          base_content: base.content,
         });
         if (isActive) {
-          setContent(nextContent);
-          draftContentRef.current = nextContent;
+          // 서버가 다른 기기의 변경과 병합했을 수 있으므로 응답 본문을 기준으로 맞춘다.
+          replaceEditorDoc(updated.content);
           setActiveNote(updated);
           lastSentRef.current = {
             ...lastSentRef.current,
-            title: draftTitleRef.current,
-            content: nextContent,
+            title: nextTitle,
+            content: updated.content,
           };
+          baseRef.current = { revision: updated.revision, title: nextTitle, content: updated.content };
           setSaveState("saved");
         }
         setTodoItems((prev) =>
@@ -1111,6 +1204,7 @@ export function MemoWorkbench({
         content: draft.content,
         overlayKey: overlaySignature(incomingOverlay),
       };
+      baseRef.current = { revision: draft.revision, title: draft.title, content: draft.content };
       setSaveState("saved");
     });
 
@@ -1548,6 +1642,116 @@ export function MemoWorkbench({
       handleApiError(e);
     }
   }
+
+  // ---------- 동기화: 다른 기기의 변경을 몇 초 간격으로 가져온다 ----------
+
+  /** 다른 곳에서 바뀐 활성 노트를 화면에 반영한다. 편집 중인 본문은 건드리지 않는다. */
+  function applyRemoteNote(fresh: NoteDetail): void {
+    setActiveNote(fresh);
+    // 그림: 아직 저장 안 된 내 stroke 가 없을 때만 원격 것으로 교체.
+    const remoteOverlay = Array.isArray(fresh.overlay_strokes) ? fresh.overlay_strokes : [];
+    if (overlaySignature(overlayStrokesRef.current) === lastSentRef.current.overlayKey) {
+      lastSentRef.current = { ...lastSentRef.current, overlayKey: overlaySignature(remoteOverlay) };
+      setOverlayStrokes(remoteOverlay);
+    }
+    if (fresh.revision === baseRef.current.revision) return;
+    syncDraftFromDom();
+    const clean =
+      draftTitleRef.current === lastSentRef.current.title &&
+      draftContentRef.current === lastSentRef.current.content;
+    const composing = composingRef.current || !!editorViewRef.current?.composing;
+    // 편집 중이면 그대로 둔다 — 다음 저장 때 서버가 병합해서 돌려준다.
+    if (!clean || composing) return;
+    replaceEditorDoc(fresh.content);
+    draftTitleRef.current = fresh.title;
+    setTitle(fresh.title);
+    lastSentRef.current = { ...lastSentRef.current, title: fresh.title, content: fresh.content };
+    baseRef.current = { revision: fresh.revision, title: fresh.title, content: fresh.content };
+    setSaveState("saved");
+  }
+
+  async function handleSyncChanges(res: SyncChanges): Promise<void> {
+    const prevSeq = syncSeqRef.current;
+    syncSeqRef.current = res.seq;
+    if (prevSeq === null) {
+      // 첫 응답은 현재 위치만 알려준다. 화면의 목록은 이 위치를 받기 전에 읽은
+      // 것이라 그 사이 변경을 놓쳤을 수 있으므로 한 번 다시 읽는다.
+      void refreshMeta();
+      void reloadNotes();
+      return;
+    }
+    if (prevSeq === res.seq) return;
+
+    const activeId = activeNoteIdRef.current;
+    if (activeId && res.deleted.includes(activeId)) {
+      // 다른 기기에서 지운 노트를 보고 있었다 → 닫는다 (저장하면 404 가 된다).
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      setActiveNoteId(undefined);
+      setActiveNote(undefined);
+      draftTitleRef.current = "";
+      draftContentRef.current = "";
+      setTitle("");
+      setContent("");
+    }
+    const activeRow = activeId ? res.notes.find((n) => n.id === activeId) : undefined;
+    // 내 저장도 seq 를 올리므로, 이미 응답으로 받은 change_seq 와 같으면 내 변경이다.
+    const activeChangedElsewhere =
+      !!activeRow && activeRow.change_seq !== activeNoteRef.current?.change_seq;
+    const listChanged =
+      res.meta_changed ||
+      res.deleted.length > 0 ||
+      activeChangedElsewhere ||
+      res.notes.some((n) => n.id !== activeId);
+    if (res.meta_changed) void refreshMeta();
+    if (listChanged) void reloadNotes();
+    if (activeChangedElsewhere && activeId) {
+      const fresh = await api.getNote(token, activeId);
+      if (activeNoteIdRef.current === activeId) applyRemoteNote(fresh);
+    }
+  }
+
+  // 폴링 루프는 한 번만 만들고, 처리 함수는 ref 로 최신 클로저를 읽는다.
+  const handleSyncChangesRef = useRef(handleSyncChanges);
+  handleSyncChangesRef.current = handleSyncChanges;
+
+  useEffect(() => {
+    const INTERVAL_MS = 3000;
+    let stopped = false;
+    let timer: number | null = null;
+    let running = false;
+    const tick = async () => {
+      if (stopped || running) return;
+      running = true;
+      try {
+        // 탭이 가려져 있으면 쉬고, 다시 보이는 순간 visibilitychange 가 바로 깨운다.
+        if (document.visibilityState === "visible") {
+          const res = await api.syncChanges(token, syncSeqRef.current ?? undefined);
+          if (!stopped) await handleSyncChangesRef.current(res);
+        }
+      } catch (e) {
+        // 네트워크가 잠깐 끊긴 것은 조용히 넘기고 다음 주기에 다시 시도한다.
+        if (e instanceof ApiError && e.status === 401) onUnauthorized();
+      } finally {
+        running = false;
+        if (!stopped) timer = window.setTimeout(tick, INTERVAL_MS);
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (timer) window.clearTimeout(timer);
+      void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    void tick();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [onUnauthorized, token]);
 
   function openCommandPalette() {
     setCommandQuery("");
@@ -2009,6 +2213,8 @@ export function MemoWorkbench({
           updated_at: activeNote.updated_at,
           deleted_at: activeNote.deleted_at,
           tags: activeNote.tags,
+          revision: activeNote.revision,
+          change_seq: activeNote.change_seq,
         });
       }}
       imageInputRef={imageInputRef}
@@ -2049,7 +2255,7 @@ export function MemoWorkbench({
       onBodyChange={(value) => {
         draftContentRef.current = value;
         setContent(value);
-        if (!composingRef.current) scheduleAutosave();
+        if (!composingRef.current && !applyingRemoteRef.current) scheduleAutosave();
         const view = editorViewRef.current;
         if (view) updateSlashMenuFromView(view);
       }}

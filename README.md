@@ -151,6 +151,7 @@ cd api; .\.venv\Scripts\python -c "from app.database import SessionLocal; from a
 | 저장소 사용량 | ✅ `/api/storage/usage` |
 | Markdown 일괄 export (.zip) | ✅ |
 | PWA (홈 화면에 설치) | ✅ HTTPS 도메인일 때 |
+| 여러 기기 동기화 | ✅ 3초 폴링 + 서버 자동 병합 (오프라인 편집은 예정) |
 
 ## API 요약
 
@@ -165,6 +166,7 @@ POST   /api/notes/{id}/restore-version/{version_id}
 POST   /api/notes/{id}/attachments
 DELETE /api/attachments/{id}
 GET    /api/attachments/{id}/download · /thumbnail
+GET    /api/sync/changes?since=   (다른 기기의 변경 폴링)
 GET    /api/search?q=
 GET    /api/storage/usage
 GET    /api/export/manifest · /api/export/markdown

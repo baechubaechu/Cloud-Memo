@@ -9,6 +9,7 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import Folder, Note
 from app.schemas import FolderCreate, FolderOut, FolderUpdate
+from app.services.sync import touch_meta
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
@@ -42,6 +43,7 @@ def create_folder(body: FolderCreate, db: Db, me: CurrentUser):
         sort_order=body.sort_order,
     )
     db.add(f)
+    touch_meta(db)
     db.commit()
     db.refresh(f)
     return f
@@ -61,6 +63,7 @@ def update_folder(body: FolderUpdate, folder_id: Annotated[str, Path()], db: Db,
         folder.parent_id = data["parent_id"]
     if "sort_order" in data:
         folder.sort_order = int(data["sort_order"])
+    touch_meta(db)
     db.commit()
     db.refresh(folder)
     return folder
@@ -85,6 +88,7 @@ def delete_folder(folder_id: Annotated[str, Path()], db: Db, me: CurrentUser):
         n.folder_id = None
     out = FolderOut.model_validate(folder)
     db.delete(folder)
+    touch_meta(db)
     db.commit()
     return out
 

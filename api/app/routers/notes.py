@@ -35,6 +35,7 @@ from app.schemas import (
 )
 from app.services.search_query import split_query as _split_query
 from app.services.storage import resolve_storage_path
+from app.services.sync import add_tombstone, merge_text, touch_note
 from app.services.versions import maybe_snapshot_before_update
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -82,6 +83,24 @@ def _detail(n: Note) -> NoteDetail:
         tags=[TagOut.model_validate(t) for t in n.tags if t.deleted_at is None],
         attachments=[_attachment_out(a) for a in live_attachments],
         overlay_strokes=list(n.overlay_strokes or []),
+        revision=n.revision,
+        change_seq=n.change_seq,
+    )
+
+
+def list_item(n: Note) -> NoteListItem:
+    return NoteListItem(
+        id=n.id,
+        title=n.title,
+        folder_id=n.folder_id,
+        is_favorite=n.is_favorite,
+        is_archived=n.is_archived,
+        created_at=n.created_at,
+        updated_at=n.updated_at,
+        deleted_at=n.deleted_at,
+        tags=[TagOut.model_validate(t) for t in n.tags if t.deleted_at is None],
+        revision=n.revision,
+        change_seq=n.change_seq,
     )
 
 
@@ -175,20 +194,7 @@ def list_notes(
 
     stmt = stmt.order_by(Note.is_favorite.desc(), Note.updated_at.desc())
     rows = list(db.execute(stmt).unique().scalars().all())
-    return [
-        NoteListItem(
-            id=n.id,
-            title=n.title,
-            folder_id=n.folder_id,
-            is_favorite=n.is_favorite,
-            is_archived=n.is_archived,
-            created_at=n.created_at,
-            updated_at=n.updated_at,
-            deleted_at=n.deleted_at,
-            tags=[TagOut.model_validate(t) for t in n.tags if t.deleted_at is None],
-        )
-        for n in rows
-    ]
+    return [list_item(n) for n in rows]
 
 
 @router.post("", response_model=NoteDetail)
@@ -197,6 +203,7 @@ def create_note(body: NoteCreate, db: Db, me: CurrentUser):
     db.add(n)
     db.flush()
     _sync_tags(n, body.tag_ids, db)
+    touch_note(db, n)
     db.commit()
     n = _load_with_relations(db, n.id, me.id)
     assert n is not None
@@ -223,9 +230,24 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
     # 예) {"folder_id": null} 은 루트로 이동하라는 뜻이지 무시 대상이 아님.
     data = body.model_dump(exclude_unset=True)
 
-    title_changed = "title" in data and data["title"] != n.title
-    content_changed = "content" in data and data["content"] != n.content
-    if title_changed or content_changed:
+    # 다른 기기가 그 사이 저장했으면(클라이언트가 본 revision 이 낡음) 덮어쓰지 않고
+    # 병합한다. 본문은 3-way 병합, 제목은 이 클라이언트가 실제로 바꿨을 때만 반영.
+    stale = body.base_revision is not None and body.base_revision != n.revision
+    merged = False
+    if stale:
+        if data.get("content") is not None and body.base_content is not None:
+            new_content = merge_text(body.base_content, n.content, data["content"])
+            merged = new_content != data["content"]
+            data["content"] = new_content
+        if data.get("title") is not None and body.base_title is not None and data["title"] == body.base_title:
+            data["title"] = n.title
+
+    title_changed = "title" in data and data["title"] is not None and data["title"] != n.title
+    content_changed = "content" in data and data["content"] is not None and data["content"] != n.content
+    if merged and content_changed:
+        # 병합 결과가 이상할 때 되돌릴 수 있게 병합 직전 상태를 반드시 남긴다.
+        maybe_snapshot_before_update(db, n, force=True, reason="before_merge")
+    elif title_changed or content_changed:
         maybe_snapshot_before_update(db, n, force=bool(body.force_snapshot), reason="periodic_autosave")
     elif body.force_snapshot:
         maybe_snapshot_before_update(db, n, force=True, reason="manual")
@@ -254,6 +276,7 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
             raise HTTPException(status_code=413, detail="too many strokes")
         n.overlay_strokes = new_strokes
 
+    touch_note(db, n, text_changed=title_changed or content_changed)
     db.commit()
     n2 = _load_with_relations(db, n.id, me.id)
     assert n2 is not None
@@ -288,6 +311,7 @@ def delete_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     # "1행 삭제 예상, 0행" StaleDataError 로 태그 달린 노트 삭제가 500 이 된다.
     db.execute(delete(NoteVersion).where(NoteVersion.note_id == n.id))
     db.execute(delete(Attachment).where(Attachment.note_id == n.id))
+    add_tombstone(db, n)
     db.delete(n)
     db.commit()
     return out
@@ -346,6 +370,7 @@ def restore_version(
     maybe_snapshot_before_update(db, n, force=True, reason="restore")
     n.title = v.title
     n.content = v.content
+    touch_note(db, n, text_changed=True)
     db.commit()
     n2 = _load_with_relations(db, n.id, me.id)
     assert n2 is not None
@@ -361,6 +386,7 @@ def set_tags(body: NoteTagsBody, note_id: Annotated[str, Path()], db: Db, me: Cu
     if not n:
         raise HTTPException(status_code=404, detail="Not found")
     _sync_tags(n, body.tag_ids, db)
+    touch_note(db, n)
     db.commit()
     n2 = _load_with_relations(db, n.id, me.id)
     assert n2 is not None
