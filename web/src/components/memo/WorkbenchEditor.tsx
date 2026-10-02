@@ -40,7 +40,7 @@ import type { Folder, NoteDetail, OverlayStroke, Tag } from "@/lib/api";
 import type { SlashMenuState } from "./workbenchTypes";
 import type { RightPanelKind } from "./WorkbenchRightPanel";
 
-export type SaveState = "saved" | "saving" | "dirty";
+export type SaveState = "saved" | "saving" | "dirty" | "offline";
 
 export type SlashMenuEntry = {
   id: string;
@@ -183,14 +183,22 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
       <div className="flex h-9 items-center gap-2 border-b border-ink-900/10 bg-[#fafaf9] px-3 text-[12px] text-ink-900/65">
         <span
           className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-            saveState === "dirty"
+            saveState === "offline"
+              ? "bg-rose-100 text-rose-800"
+              : saveState === "dirty"
               ? "bg-amber-100 text-amber-800"
               : saveState === "saving"
                 ? "bg-sky-100 text-sky-900"
                 : "bg-emerald-100 text-emerald-800"
           }`}
         >
-          {saveState === "dirty" ? "편집 중" : saveState === "saving" ? "저장 중" : "저장됨"}
+          {saveState === "offline"
+            ? "오프라인 · 연결되면 저장"
+            : saveState === "dirty"
+              ? "편집 중"
+              : saveState === "saving"
+                ? "저장 중"
+                : "저장됨"}
         </span>
         <select
           value={activeNote.folder_id ?? ""}

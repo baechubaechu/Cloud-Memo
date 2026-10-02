@@ -53,6 +53,7 @@ import type {
   Tag,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
+import { offlineStore } from "@/lib/offlineStore";
 import { type OverlayDrawingLayerHandle, type OverlayDrawingTool } from "./OverlayDrawingLayer";
 import { parseChecklistLine } from "./markdown";
 import type {
@@ -101,7 +102,7 @@ export function MemoWorkbench({
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty" | "offline">("saved");
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
@@ -163,6 +164,9 @@ export function MemoWorkbench({
   const applyingRemoteRef = useRef(false);
   /** 저장 요청을 한 번에 하나씩만 보낸다 (동시에 두 개가 나가면 서로를 병합 대상으로 본다). */
   const flushChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** 서버에 닿지 못했을 때 저장을 다시 시도하는 타이머. */
+  const retryTimerRef = useRef<number | null>(null);
+  const flushAutosaveRef = useRef<() => void>(() => {});
   /** 동기화 폴링 위치. null 이면 아직 첫 응답 전. */
   const syncSeqRef = useRef<number | null>(null);
   /** setState 직후 디바운스된 flushAutosave 가 옛 title/content 클로저를 읽는 것을 막기 위한 동기 초안 */
@@ -452,11 +456,23 @@ export function MemoWorkbench({
         const sameBody = nextContent === lastSentRef.current.content;
         if (sameTitle && sameBody && !forceSnapshot) return true;
 
+        const base = baseRef.current;
+        // 보내기 전에 기기에 먼저 적어 둔다. 서버에 닿지 못한 채 탭을 닫아도 글이
+        // 남고, 다음에 연결되면 pushPendingDrafts 가 올린다.
+        await offlineStore.putDraft({
+          noteId,
+          title: nextTitle,
+          content: nextContent,
+          baseRevision: base.revision,
+          baseTitle: base.title,
+          baseContent: base.content,
+          updatedAt: Date.now(),
+        });
+
         try {
           setSaveState("saving");
           // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
           // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
-          const base = baseRef.current;
           const updated = await api.patchNote(token, noteId, {
             title: nextTitle,
             content: nextContent,
@@ -467,7 +483,10 @@ export function MemoWorkbench({
           });
           void reloadNotes();
           // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
-          if (activeNoteIdRef.current !== noteId) return true;
+          if (activeNoteIdRef.current !== noteId) {
+            await offlineStore.deleteDraft(noteId);
+            return true;
+          }
 
           const merged = updated.content !== nextContent || updated.title !== nextTitle;
           const stillClean =
@@ -492,18 +511,30 @@ export function MemoWorkbench({
             baseRef.current = { revision: base.revision, title: nextTitle, content: nextContent };
           }
           setActiveNote(updated);
-          setSaveState(
+          const allSaved =
             draftTitleRef.current === lastSentRef.current.title &&
-              draftContentRef.current === lastSentRef.current.content
-              ? "saved"
-              : "dirty",
-          );
+            draftContentRef.current === lastSentRef.current.content;
+          // 더 입력한 게 남아 있으면 기기 초안은 다음 저장이 덮어쓸 때까지 둔다.
+          if (allSaved) await offlineStore.deleteDraft(noteId);
+          setSaveState(allSaved ? "saved" : "dirty");
           const vers = await api.listVersions(token, noteId);
           if (activeNoteIdRef.current === noteId) setVersions(vers);
           return true;
         } catch (e) {
-          handleApiError(e);
-          setSaveState("dirty");
+          if (e instanceof ApiError) {
+            handleApiError(e);
+            setSaveState("dirty");
+            return false;
+          }
+          // 서버에 닿지 못함(오프라인·서버 꺼짐). 글은 기기에 보관돼 있으니 경고 대신
+          // 상태만 바꾸고, 연결될 때까지 주기적으로 다시 시도한다.
+          setSaveState("offline");
+          if (retryTimerRef.current === null) {
+            retryTimerRef.current = window.setTimeout(() => {
+              retryTimerRef.current = null;
+              flushAutosaveRef.current();
+            }, 5000);
+          }
           return false;
         }
       };
@@ -547,6 +578,64 @@ export function MemoWorkbench({
     [activeNote, activeNoteId, flushDraftForNote],
   );
 
+  flushAutosaveRef.current = () => void flushAutosave(false);
+
+  /**
+   * 지난번에 서버에 올리지 못한 초안을 올린다 (앱 시작 시, 다시 온라인이 될 때).
+   * 지금 열려 있는 노트는 일반 저장 흐름이 처리하므로 건너뛴다.
+   */
+  const pushPendingDrafts = useCallback(async () => {
+    const drafts = await offlineStore.listDrafts();
+    let pushed = false;
+    for (const d of drafts) {
+      if (d.noteId === activeNoteIdRef.current) continue;
+      try {
+        await api.patchNote(token, d.noteId, {
+          title: d.title,
+          content: d.content,
+          base_revision: d.baseRevision,
+          base_title: d.baseTitle,
+          base_content: d.baseContent,
+        });
+        await offlineStore.deleteDraft(d.noteId);
+        pushed = true;
+      } catch (e) {
+        if (!(e instanceof ApiError)) break; // 아직 오프라인 — 다음 기회에.
+        if (e.status === 401) {
+          onUnauthorized();
+          break;
+        }
+        if (e.status === 404) {
+          // 그 사이 다른 기기에서 지워진 노트. 쓴 글을 버리지 않고 새 노트로 살린다.
+          try {
+            await api.createNote(token, { title: `${d.title || "무제 노트"} (복구)`, content: d.content });
+            await offlineStore.deleteDraft(d.noteId);
+            pushed = true;
+          } catch {
+            /* 다음 기회에 다시 */
+          }
+        }
+      }
+    }
+    if (pushed) void reloadNotes();
+  }, [onUnauthorized, reloadNotes, token]);
+
+  useEffect(() => {
+    void pushPendingDrafts();
+    const onOnline = () => {
+      void pushPendingDrafts();
+      flushAutosaveRef.current();
+    };
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [pushPendingDrafts]);
+
   const loadNote = useCallback(
     async (id: string) => {
       try {
@@ -561,7 +650,12 @@ export function MemoWorkbench({
         const prevNote = activeNoteRef.current;
         if (prevId && prevNote && !prevNote.deleted_at) {
           const saved = await flushDraftForNote(prevId, prevNote, false);
-          if (!saved) return;
+          if (!saved) {
+            setError(
+              "서버에 연결할 수 없어 다른 노트를 열지 못했습니다. 작성 중인 내용은 이 기기에 보관되며, 연결되면 자동으로 저장됩니다.",
+            );
+            return;
+          }
           if (!(await flushOverlayForNote(prevId))) return;
         }
 
