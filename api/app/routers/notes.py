@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import Attachment, Note, NoteVersion, Tag, note_tags
+from app.models import Attachment, Note, NoteVersion, Tag
 from app.schemas import (
     AttachmentOut,
     NoteCreate,
@@ -284,10 +284,11 @@ def trash_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
             except Exception:
                 pass
     # SQLAlchemy가 FK를 NULL로 만들려고 하며 제약조건을 깨뜨리지 않도록
-    # 하위 레코드(버전/첨부/태그연결)를 먼저 명시적으로 지운다.
+    # 하위 레코드(버전/첨부)를 먼저 명시적으로 지운다. 태그 연결(note_tags)은
+    # db.delete(n) 이 로드된 n.tags 를 보고 직접 지운다 — 여기서 먼저 지우면
+    # "1행 삭제 예상, 0행" StaleDataError 로 태그 달린 노트 삭제가 500 이 된다.
     db.execute(delete(NoteVersion).where(NoteVersion.note_id == n.id))
     db.execute(delete(Attachment).where(Attachment.note_id == n.id))
-    db.execute(delete(note_tags).where(note_tags.c.note_id == n.id))
     db.delete(n)
     db.commit()
     return out
