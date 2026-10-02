@@ -1,6 +1,6 @@
 import { redo, undo } from "@codemirror/commands";
 import { Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { keymap } from "@codemirror/view";
 import { parseChecklistLine, parseQuoteLine } from "./markdown";
 import { isAttachmentLineText, removeWholeAttachmentLine } from "./editorAttachmentLine";
 

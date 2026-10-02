@@ -3,9 +3,6 @@
 // props 타입을 import 해 쓸 수 있도록 별도 파일로 옮긴다. 비즈니스 로직 / state 는
 // 그대로 MemoWorkbench 안에 남는다.
 
-/** 모바일 3패널 (정리 / 목록 / 편집) 식별자. */
-export type Panel = "nav" | "list" | "editor";
-
 /** 노트 리스트 모드: 일반 / 즐겨찾기 / 아카이브. */
 export type ListMode = "active" | "favorite" | "archive";
 

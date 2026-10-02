@@ -24,19 +24,43 @@
     잘못 처리하거나, autosave 시 제목 변경이 백엔드에 반영되지 않는 듯.
   - 점검 포인트: `web/src/components/memo/Workbench.tsx` 의 제목 저장 흐름,
     `api.updateNote` 호출 직전의 normalize, 백엔드 `notes.title` validator.
-- [ ] **인라인 이미지 미리보기 해상도**
-  - 증상: 본문에 첨부된 이미지의 미리보기가 흐릿하게 보임.
-  - 점검 포인트
-    - 백엔드 attachments 라우트가 원본을 그대로 내려주는지, 어딘가에서 썸네일
-      변환이 끼어드는지.
-    - 프런트의 `<img>` 가 `width/height` 강제로 다운스케일하고 있지 않은지
-      (`object-fit: cover` + 작은 컨테이너 등).
-    - 첨부 업로드 단계에서 자동 압축 / 리사이즈가 들어가는지.
-    - CDN/Caddy 캐싱과 Content-Type 도 같이 확인.
+- [x] **인라인 이미지 미리보기 해상도** *(수정)*
+  - 원인: 본문 이미지가 480px 썸네일(`/thumbnail`)을 불러오는데, 이미지 블록은
+    최대 1200px 까지 늘릴 수 있어 확대 시 흐려졌다.
+  - 처리: `editorHydrate.ts` 가 본문 이미지도 원본(`/download`)을 불러오도록 변경.
+    우측 첨부 패널의 작은 미리보기는 그대로 썸네일 사용.
 
 ---
 
 ## 기술 부채 / 리팩토링
+
+### 코드 점검 결과 (2026-10) — 남은 항목
+
+성능
+- [ ] **자동 저장 1회당 요청 4개** — `flushDraftForNote` 가 저장 후 목록 전체 재조회·
+  용량 조회·버전 목록까지 매번 호출. 목록은 해당 노트만 로컬 갱신, 버전은 패널 열림 시만.
+- [ ] **할 일 패널 N+1** — `refreshTodoItems` 가 노트마다 `getNote`. 백엔드에 할 일
+  모음 API 추가(§0-1 「해당 줄로 이동」과 같이).
+- [ ] **노트 목록 API 불필요 로드** — `notes.py` `_base_list_stmt` 의
+  `selectinload(Note.attachments)` 제거(목록 응답에 첨부 없음).
+- [ ] 여러 노트 이동·삭제를 일괄 API로(현재 노트마다 요청).
+
+안정성 / 정리
+- [ ] **새 노트 제목 포커스 가드 단순화** — `armTitleFocusGuard` 타이머 13개는 이중
+  마운트(해결됨) 대응용. 브라우저 확인하며 단일 포커스로 축소.
+- [ ] 확인창 통일 — 첨부 삭제·버전 복원이 `window.confirm`, 나머지는 `askConfirm`.
+- [ ] 캐럿 위치 결정 로직 중복 — `insertMarkerAtCursor` / `insertTextAtCursor`.
+- [ ] 그림 레이어 저장 타이머가 본문 저장마다 리셋 — effect 의존성의 `activeNote`.
+- [ ] 이미지 blob URL 미해제(`editorHydrate.ts` `__blobCache`) — 세션 중 메모리 누적.
+- [ ] 큰 원본 이미지 로딩 — 필요 시 업로드 때 1200px 중간 크기 생성.
+
+기능 누락
+- [ ] **태그 생성 UI 없음** — `api.createTag` 는 있으나 연결된 버튼이 없음.
+  명령 팔레트 「새 태그」 또는 사이드바에 추가.
+
+구조
+- [ ] `Workbench.tsx`(약 1980줄) 커스텀 훅 분리 — `useAutosave`, `useAudioRecorder`,
+  슬래시 메뉴, 폴더·노트 조작. 위 항목 처리 후.
 
 - [~] **`Workbench.tsx` 4000줄 → 다시 모듈 분리** *(1·2·3·4차 분리 완료)*
   - 이전 라운드에서 한 번 쪼갰지만, 위키링크/슬래시 메뉴/그림 레이어/오디오/
@@ -56,7 +80,7 @@
     - 결과: `Workbench.tsx` ≈3620줄 → ≈3028줄.
   - 3차 결과
     - 모바일 정리/목록 카드 → `WorkbenchMobilePanels.tsx`
-      (`MobileNavCard` + `MobileListCard`).
+      (`MobileNavCard` + `MobileListCard`). *(이후 미사용으로 삭제 — 모바일은 네이티브 앱 담당)*
     - 명령 팔레트 / 슬래시 커맨드 정의 → `workbenchCommands.ts`
       (`buildAppCommands` + `buildSlashCommands`, deps 객체로 주입).
       관련 타입 (`SlashCommand`) 도 `workbenchTypes.ts` 로 같이 이동.

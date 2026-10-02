@@ -19,10 +19,8 @@ function getBlobUrlFor(
   if (cached) return Promise.resolve(cached);
   const ctx = getMemoEditorContext(view);
   if (!ctx) return Promise.resolve(null);
-  const url =
-    kind === "image"
-      ? `${ctx.apiUrl}/api/attachments/${attId}/thumbnail`
-      : `${ctx.apiUrl}/api/attachments/${attId}/download`;
+  // 본문 이미지는 최대 1200px 까지 키울 수 있어 480px 썸네일로는 흐려진다.
+  const url = `${ctx.apiUrl}/api/attachments/${attId}/download`;
   return fetch(url, { headers: { Authorization: `Bearer ${ctx.token}` } })
     .then(async (resp) => {
       if (!resp.ok) return null;

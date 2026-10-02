@@ -27,9 +27,6 @@ import {
   DND_MIME_NOTE_MULTI,
   DND_MIME_FOLDER,
   compareName,
-  dndHasMime,
-  formatBytes,
-  formatDateTime,
 } from "./utils";
 import {
   useCallback,
@@ -59,12 +56,9 @@ import { parseChecklistLine } from "./markdown";
 import type {
   ConfirmDialogState,
   ContextMenuTarget,
-  CreatingFolderState,
   DragItem,
   HoverMeta,
-  Panel,
   ListMode,
-  RenamingState,
   SelectionAnchor,
   TodoPanelItem,
   SlashMenuState,
@@ -77,13 +71,6 @@ import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
 import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
-
-// (REASON_LABEL, formatBytes, formatDateTime, compareName, DND 상수, dndHasMime 은 ./utils 로 이동)
-// (escapeHtml 등 마크다운 렌더링은 ./markdown 으로 이동)
-// (CodeMirror 위젯/상태/테마/이벤트 핸들러는 ./editor 로 이동)
-// (Panel/ListMode/TodoPanelItem/SlashMenuState 등 타입은 ./workbenchTypes 로 이동)
-// (overlaySignature/todayNoteTitle/extractTodoItems 헬퍼는 ./workbenchHelpers 로 이동)
-// (위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장으로 이동)
 
 export function MemoWorkbench({
   token,
@@ -114,7 +101,6 @@ export function MemoWorkbench({
   const [content, setContent] = useState("");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty">("saved");
 
-  const [panel, setPanel] = useState<Panel>("list");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   // 데스크탑 우측 토글 패널: 평소엔 닫혀있고 버튼으로 파일/버전/할 일 중 하나 표시
@@ -475,7 +461,6 @@ export function MemoWorkbench({
           pendingFocusNewNoteRef.current = null;
         }
 
-        setPanel("editor");
         setActiveNoteId(id);
         // 노트가 바뀌면 이전 노트에서 두었던 캐럿 위치는 의미가 없다. 사용자가
         // 새 노트 본문에 클릭하기 전까지는 "명시적 캐럿 없음" 상태로 둔다.
@@ -1024,17 +1009,6 @@ export function MemoWorkbench({
     }
   }
 
-  async function handleCreateTag() {
-    const name = window.prompt("새 태그 이름", "아이디어");
-    if (!name) return;
-    try {
-      await api.createTag(token, name.trim());
-      await refreshMeta();
-    } catch (e) {
-      handleApiError(e);
-    }
-  }
-
   async function handleNewNote() {
     try {
       setError(null);
@@ -1093,7 +1067,6 @@ export function MemoWorkbench({
 
     flushSync(() => {
       resetLastDocCursor();
-      setPanel("editor");
       setActiveNoteId(draft.id);
       setActiveNote(draft);
       draftTitleRef.current = draft.title;
@@ -1139,7 +1112,6 @@ export function MemoWorkbench({
         draftContentRef.current = "";
         setTitle("");
         setContent("");
-        setPanel("list");
       }
     } catch (e) {
       handleApiError(e);
@@ -1166,7 +1138,6 @@ export function MemoWorkbench({
         draftContentRef.current = "";
         setTitle("");
         setContent("");
-        setPanel("list");
       }
       setSelectedNoteIds(new Set());
       selectionAnchorRef.current = null;
@@ -1182,7 +1153,6 @@ export function MemoWorkbench({
       await reloadNotes();
       await loadNote(activeNote.id);
       setMode("active");
-      setPanel("editor");
     } catch (e) {
       handleApiError(e);
     }
@@ -1674,13 +1644,11 @@ export function MemoWorkbench({
       try {
         if (target) {
           await loadNote(target.id);
-          if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
           return;
         }
         const draft = await api.createNote(token, { title, content: "" });
         await reloadNotes();
         await loadNote(draft.id);
-        if (typeof window !== "undefined" && window.innerWidth < 768) setPanel("editor");
       } catch (e) {
         handleApiError(e);
       }
@@ -1794,7 +1762,6 @@ export function MemoWorkbench({
             onClick={() => {
               setMode(m.key);
               setSelectedTagId(undefined);
-              setPanel("list");
             }}
             className={`grid h-8 w-8 place-items-center rounded-md ${
               isOn ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
@@ -2141,27 +2108,6 @@ export function MemoWorkbench({
 
         <ConfirmDialog state={confirmDialog} onResolve={closeConfirm} />
       </div>
-
-      <nav className="hidden">
-        <div className="mx-auto grid max-w-md grid-cols-3 gap-1 text-xs font-semibold text-ink-900/65">
-          {(
-            [
-              ["nav", "정리"],
-              ["list", "목록"],
-              ["editor", "편집"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              className={`min-h-[44px] rounded-full py-2 transition ${panel === key ? "bg-ink-900 text-white" : "bg-ink-900/5"}`}
-              onClick={() => setPanel(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </nav>
     </div>
   );
 }

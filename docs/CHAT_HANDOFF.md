@@ -13,7 +13,7 @@
 
 - Cloud Memo: Obsidian 스타일 마크다운 에디터, 사이드바/DnD/멀티선택, 위키링크 재설계(CodeMirror autocomplete), 명령 팔레트·슬래시 등.
 - **`Workbench.tsx` 모듈 분리 (진행 순서 합의):**
-  1. 모바일 `navCard` / `listCard` → `WorkbenchMobilePanels.tsx` ✓
+  1. 모바일 `navCard` / `listCard` → `WorkbenchMobilePanels.tsx` ✓ (이후 미사용으로 삭제)
   2. `appCommands` / `slashCommands` → `workbenchCommands.ts` ✓
   3. 우측 패널 → `WorkbenchRightPanel.tsx` ✓
   4. 에디터 쉘 → `WorkbenchEditor.tsx` (`WorkbenchEditorCard`) ✓ (2026-05-11)
@@ -24,7 +24,7 @@
 ## 주요 파일 위치 (프런트)
 
 - `web/src/components/memo/Workbench.tsx` — 줄 수 감소 중 (`WorkbenchEditor.tsx` 분리됨).
-- `web/src/components/memo/WorkbenchSidebar.tsx`, `WorkbenchMobilePanels.tsx`, `WorkbenchRightPanel.tsx`
+- `web/src/components/memo/WorkbenchSidebar.tsx`, `WorkbenchRightPanel.tsx`
 - `web/src/components/memo/workbenchCommands.ts`, `workbenchTypes.ts`, `workbenchHelpers.ts`
 - `web/src/components/memo/wikilinkExtension.ts`, `editor.ts`
 
