@@ -595,7 +595,8 @@ export function MemoWorkbench({
           }
           // 서버에 닿지 못함(오프라인·서버 꺼짐). 글은 기기에 보관돼 있으니 경고 대신
           // 상태만 바꾸고, 연결될 때까지 주기적으로 다시 시도한다.
-          draftKeptOnDeviceRef.current = true;
+          // 초안이 기기에 남는 것은 "이 기기에 노트 보관" 을 켠 경우뿐이다.
+          draftKeptOnDeviceRef.current = offlineStore.isActive();
           setOffline(true);
           setSaveState("offline");
           if (retryTimerRef.current === null) {
@@ -692,6 +693,8 @@ export function MemoWorkbench({
   }, [onUnauthorized, reloadNotes, token]);
 
   useEffect(() => {
+    // 보관이 꺼진 기기라면 예전에 남은 사본(암호화 이전의 평문 포함)을 지운다.
+    void offlineStore.purgeIfDisabled();
     // 브라우저가 디스크 부족 시 사본·초안을 지우지 않도록 요청해 둔다.
     void offlineStore.requestPersistence();
     void pushPendingDrafts();
@@ -724,7 +727,14 @@ export function MemoWorkbench({
         if (prevId && prevNote && !prevNote.deleted_at) {
           const saved = await flushDraftForNote(prevId, prevNote);
           // 서버에 닿지 못했어도 초안이 기기에 남아 있으면 전환을 막지 않는다.
-          if (!saved && !draftKeptOnDeviceRef.current) return;
+          if (!saved && !draftKeptOnDeviceRef.current) {
+            if (offlineRef.current) {
+              setError(
+                "서버에 연결할 수 없어 다른 노트를 열지 못했습니다. 이 기기는 노트 보관이 꺼져 있어, 지금 화면을 벗어나면 저장되지 않은 내용이 사라집니다.",
+              );
+            }
+            return;
+          }
           if (!(await flushOverlayForNote(prevId))) return;
         }
 
@@ -1187,7 +1197,14 @@ export function MemoWorkbench({
     } catch {
       /* ignore */
     }
-    await offlineStore.clearCache();
+    // 로그아웃하면 이 기기에 남긴 것(사본·초안·키 재료)을 전부 지우고 보관 설정도 끈다.
+    await offlineStore.setKeepOnDevice(false);
+    try {
+      // 개발 모드의 자동 로그인이 곧바로 다시 들어오지 않게 한다 (직접 로그아웃한 경우).
+      window.sessionStorage.setItem("cloud_memo_skip_autologin", "1");
+    } catch {
+      /* noop */
+    }
     onUnauthorized();
     router.replace("/login");
   };
@@ -1924,7 +1941,7 @@ export function MemoWorkbench({
    * 마지막으로 받은 위치(cacheSeq) 이후 바뀐 것만 받는다.
    */
   const refreshCache = useCallback(async () => {
-    if (cacheBusyRef.current) return;
+    if (cacheBusyRef.current || !offlineStore.isActive()) return;
     cacheBusyRef.current = true;
     try {
       const since = await offlineStore.getKv<number>("cacheSeq");
@@ -2684,7 +2701,9 @@ export function MemoWorkbench({
     <div className="flex h-dvh flex-col overflow-hidden bg-white">
       {offline ? (
         <div className="border-b border-slate-300 bg-slate-100 px-4 py-1.5 text-[12px] text-slate-700">
-          오프라인 — 이 기기에 내려받은 사본으로 작업 중입니다. 고친 내용은 연결되면 서버에 반영됩니다.
+          {offlineStore.isActive()
+            ? "오프라인 — 이 기기에 보관한 사본으로 작업 중입니다. 고친 내용은 연결되면 서버에 반영됩니다."
+            : "오프라인 — 서버에 연결할 수 없습니다. 이 기기는 노트 보관이 꺼져 있어, 지금 열린 노트만 이어서 쓸 수 있고 연결되면 저장됩니다."}
         </div>
       ) : null}
       {error ? (

@@ -18,6 +18,18 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def no_store_api_responses(request, call_next):
+    """노트·첨부 응답이 브라우저의 HTTP 캐시(디스크)에 남지 않게 한다.
+
+    기기에 무엇을 남길지는 클라이언트의 암호화 보관소만 결정한다.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}

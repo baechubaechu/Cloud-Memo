@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/app/providers";
+import { offlineStore } from "@/lib/offlineStore";
 
 // 로컬 개발 전용 자동 로그인 플래그.
 // next.js는 NEXT_PUBLIC_* 환경변수를 빌드 타임에 인라이닝하므로,
@@ -28,6 +29,52 @@ export default function LoginPage() {
   const [mounted, setMounted] = useState(false);
 
   const autoTriedRef = useRef(false);
+  // 이 기기에 노트를 (암호화해서) 보관할지. 기본은 꺼짐.
+  const [keep, setKeep] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  // 보관이 켜진 기기는 페이지를 새로 열 때마다 비밀번호로 보관소 잠금을 풀어야 한다.
+  const needsUnlock = mounted && offlineStore.keepOnDevice() && !offlineStore.isUnlocked();
+
+  useEffect(() => {
+    setKeep(offlineStore.keepOnDevice());
+    void offlineStore.purgeIfDisabled();
+  }, []);
+
+  /**
+   * 비밀번호 확인 → (켜져 있으면) 기기 보관소 잠금 해제 → 메모 화면으로.
+   * 서버에 닿지 않아도, 이 기기에 보관소가 있고 비밀번호가 맞으면 오프라인으로 들어간다.
+   */
+  const signIn = async (pw: string, keepHere: boolean): Promise<void> => {
+    let newToken: string | null = null;
+    try {
+      newToken = (await api.login(pw)).access_token;
+    } catch (e: unknown) {
+      if (e instanceof ApiError) {
+        setError(typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload));
+        return;
+      }
+      if (!(token && offlineStore.keepOnDevice())) {
+        setError("서버에 연결할 수 없습니다.");
+        return;
+      }
+    }
+    const verified = newToken !== null;
+    if (verified) await offlineStore.setKeepOnDevice(keepHere);
+    if (offlineStore.keepOnDevice()) {
+      const result = await offlineStore.unlock(pw, verified);
+      if (result === "wrong") {
+        setError("비밀번호가 맞지 않아 이 기기의 보관소를 열 수 없습니다.");
+        return;
+      }
+      if (result === "unsupported") {
+        // 암호화를 쓸 수 없는 환경(HTTP 로 접속한 경우 등)에서는 기기에 남기지 않는다.
+        await offlineStore.setKeepOnDevice(false);
+        setNotice("이 접속 환경에서는 암호화 보관을 쓸 수 없어 기기에 저장하지 않습니다.");
+      }
+    }
+    if (newToken) setToken(newToken);
+    router.replace("/memo");
+  };
 
   // 마운트 직후: dev 전용 ServiceWorker/캐시 정리 + 자격증명 프리필.
   useEffect(() => {
@@ -58,47 +105,45 @@ export default function LoginPage() {
     if (!ready) return;
     if (!mounted) return;
     if (!DEV_AUTOLOGIN) return;
-    if (token) {
+    if (token && !needsUnlock) {
       router.replace("/memo");
       return;
     }
     if (autoTriedRef.current) return;
     if (!DEV_PASSWORD) return;
+    // 방금 직접 로그아웃했으면 자동으로 다시 들어가지 않는다 (보관 설정을 고를 수 있게).
+    try {
+      if (window.sessionStorage.getItem("cloud_memo_skip_autologin") === "1") {
+        window.sessionStorage.removeItem("cloud_memo_skip_autologin");
+        autoTriedRef.current = true;
+        return;
+      }
+    } catch {
+      /* noop */
+    }
     autoTriedRef.current = true;
     setBusy(true);
-    void (async () => {
-      try {
-        const res = await api.login(DEV_PASSWORD);
-        setToken(res.access_token);
-        router.replace("/memo");
-      } catch (e: unknown) {
-        if (e instanceof ApiError) setError(typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload));
-        else setError(String(e));
-      } finally {
-        setBusy(false);
-      }
-    })();
-  }, [mounted, ready, router, setToken, token]);
+    void signIn(DEV_PASSWORD, offlineStore.keepOnDevice()).finally(() => setBusy(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, needsUnlock, ready, router, token]);
 
   useEffect(() => {
     if (!ready) return;
     if (!mounted) return;
-    if (!DEV_AUTOLOGIN && token) {
+    if (!DEV_AUTOLOGIN && token && !needsUnlock) {
       router.replace("/memo");
     }
-  }, [mounted, ready, router, token]);
+  }, [mounted, needsUnlock, ready, router, token]);
 
   const onSubmit = async (ev: FormEvent) => {
     ev.preventDefault();
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const res = await api.login(password);
-      setToken(res.access_token);
-      router.replace("/memo");
+      await signIn(password, keep);
     } catch (e: unknown) {
-      if (e instanceof ApiError) setError(typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload));
-      else setError(String(e));
+      setError(String(e));
     } finally {
       setBusy(false);
     }
@@ -112,7 +157,7 @@ export default function LoginPage() {
       <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-pane ring-1 ring-ink-900/10">
         <header className="space-y-1 pb-8">
           <p className="text-xs uppercase tracking-[0.2em] text-ink-900/45">Cloud Memo</p>
-          <h1 className="text-2xl font-semibold tracking-tight">로그인</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{needsUnlock ? "잠금 해제" : "로그인"}</h1>
           <p className="text-sm text-ink-900/60">
             초기 사용자는 Compose 환경 변수 <code className="font-mono text-xs">INITIAL_*</code> 로 부트스트랩됩니다.
           </p>
@@ -134,6 +179,22 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={keep}
+              onChange={(e) => setKeep(e.target.checked)}
+            />
+            <span>
+              <span className="font-medium text-ink-900/80">이 기기에 노트 보관 (오프라인 사용)</span>
+              <span className="block text-xs text-ink-900/55">
+                내 기기에서만 켜세요. 노트 사본을 이 기기에 암호화해서 저장하고, 열 때마다 비밀번호를
+                묻습니다. 꺼 두면 이 기기에는 아무것도 남지 않습니다.
+              </span>
+            </span>
+          </label>
+          {notice ? <p className="text-xs text-amber-700">{notice}</p> : null}
           {error ? (
             <p role="alert" className="text-sm text-red-600">
               로그인에 실패했습니다. {error}
