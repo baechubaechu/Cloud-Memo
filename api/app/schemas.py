@@ -69,7 +69,6 @@ class NoteUpdate(BaseModel):
     tag_ids: Optional[List[uuid.UUID]] = None
     is_favorite: Optional[bool] = None
     is_archived: Optional[bool] = None
-    force_snapshot: bool = False
     # 동기화: 클라이언트가 마지막으로 서버와 맞췄던 상태. base_revision 이 서버의
     # 현재 revision 과 다르면 base_title/base_content 를 기준으로 3-way 병합한다.
     base_revision: Optional[int] = None

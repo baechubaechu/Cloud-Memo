@@ -27,8 +27,6 @@ class Settings(BaseSettings):
     initial_user_email: str = Field(default="admin@localhost", alias="INITIAL_USER_EMAIL")
     initial_user_password: str = Field(default=INSECURE_INITIAL_PASSWORD, alias="INITIAL_USER_PASSWORD")
 
-    version_autosave_min_seconds: int = Field(default=120, alias="VERSION_AUTOSAVE_MIN_SECONDS")
-
     max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
 
     # APP_ENV=production 일 때만 안전 검증을 강제한다.

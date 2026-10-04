@@ -506,7 +506,7 @@ export function MemoWorkbench({
   }
 
   const flushDraftForNote = useCallback(
-    (noteId: string, note: NoteDetail, forceSnapshot?: boolean): Promise<boolean> => {
+    (noteId: string, note: NoteDetail): Promise<boolean> => {
       const run = async (): Promise<boolean> => {
         if (!noteId || note.deleted_at) return true;
         syncDraftFromDom();
@@ -514,7 +514,7 @@ export function MemoWorkbench({
         const nextContent = draftContentRef.current;
         const sameTitle = nextTitle === lastSentRef.current.title;
         const sameBody = nextContent === lastSentRef.current.content;
-        if (sameTitle && sameBody && !forceSnapshot) return true;
+        if (sameTitle && sameBody) return true;
 
         draftKeptOnDeviceRef.current = false;
         const base = baseRef.current;
@@ -537,7 +537,6 @@ export function MemoWorkbench({
           const updated = await api.patchNote(token, noteId, {
             title: nextTitle,
             content: nextContent,
-            force_snapshot: !!forceSnapshot,
             base_revision: base.revision,
             base_title: base.title,
             base_content: base.content,
@@ -637,14 +636,14 @@ export function MemoWorkbench({
   );
 
   const flushAutosave = useCallback(
-    async (forceSnapshot?: boolean) => {
+    async () => {
       if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
-      await flushDraftForNote(activeNoteId, activeNote, forceSnapshot);
+      await flushDraftForNote(activeNoteId, activeNote);
     },
     [activeNote, activeNoteId, flushDraftForNote],
   );
 
-  flushAutosaveRef.current = () => void flushAutosave(false);
+  flushAutosaveRef.current = () => void flushAutosave();
 
   /**
    * 지난번에 서버에 올리지 못한 초안을 올린다 (앱 시작 시, 다시 온라인이 될 때).
@@ -715,7 +714,7 @@ export function MemoWorkbench({
         const prevId = activeNoteIdRef.current;
         const prevNote = activeNoteRef.current;
         if (prevId && prevNote && !prevNote.deleted_at) {
-          const saved = await flushDraftForNote(prevId, prevNote, false);
+          const saved = await flushDraftForNote(prevId, prevNote);
           // 서버에 닿지 못했어도 초안이 기기에 남아 있으면 전환을 막지 않는다.
           if (!saved && !draftKeptOnDeviceRef.current) return;
           if (!(await flushOverlayForNote(prevId))) return;
@@ -855,7 +854,7 @@ export function MemoWorkbench({
     // compositionend 가 안 온다), 조합 중이라고 저장을 미루면 제목이 영영 저장되지
     // 않는다. 저장 응답이 입력칸을 덮어쓰지 않으므로 조합 중 저장해도 글자가 깨지지 않는다.
     saveTimerRef.current = window.setTimeout(() => {
-      void flushAutosave(false);
+      void flushAutosave();
       saveTimerRef.current = null;
     }, 900);
   }, [activeNote, activeNoteId, flushAutosave]);
@@ -1389,7 +1388,7 @@ export function MemoWorkbench({
     const prevId = activeNoteIdRef.current;
     const prevNote = activeNoteRef.current;
     if (prevId && prevId !== draft.id && prevNote && !prevNote.deleted_at) {
-      const saved = await flushDraftForNote(prevId, prevNote, false);
+      const saved = await flushDraftForNote(prevId, prevNote);
       if (!saved) return;
       if (!(await flushOverlayForNote(prevId))) return;
     }
@@ -1841,17 +1840,6 @@ export function MemoWorkbench({
     try {
       await api.restoreVersion(token, activeNoteId, v.id);
       await loadNote(activeNoteId);
-    } catch (e) {
-      handleApiError(e);
-    }
-  }
-
-  async function handleManualSnapshot() {
-    if (!activeNoteId) return;
-    try {
-      await api.snapshotNote(token, activeNoteId);
-      const vers = await api.listVersions(token, activeNoteId);
-      setVersions(vers);
     } catch (e) {
       handleApiError(e);
     }
@@ -2516,7 +2504,6 @@ export function MemoWorkbench({
       onMoveNoteFolder={handleMoveNoteFolder}
       onToggleFavorite={() => void toggleFavorite()}
       onToggleArchive={() => void toggleArchive()}
-      onManualSnapshot={() => void handleManualSnapshot()}
       onDeleteNote={() => {
         if (!activeNote) return;
         void handleListItemAction({
@@ -2564,7 +2551,7 @@ export function MemoWorkbench({
       }}
       onTitleCompositionStart={handleCompositionStart}
       onTitleCompositionEnd={handleTitleCompositionEnd}
-      onTitleBlur={() => void flushAutosave(false)}
+      onTitleBlur={() => void flushAutosave()}
       allTags={tags}
       onToggleTagForActive={toggleTagForActive}
       onCreateTagForActive={createTagForActive}

@@ -7,7 +7,6 @@ Path scheme:
     PATCH  /notes/{id}                           -- update (autosave + favorite + archive)
     DELETE /notes/{id}                           -- permanent delete
     GET    /notes/{id}/versions                  -- list snapshots
-    POST   /notes/{id}/versions                  -- manual snapshot
     POST   /notes/{id}/restore-version/{vid}     -- replace body with version (creates `restore` snapshot first)
     POST   /notes/{id}/tags                      -- bulk-set tag list
 """
@@ -248,9 +247,8 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
         # 병합 결과가 이상할 때 되돌릴 수 있게 병합 직전 상태를 반드시 남긴다.
         maybe_snapshot_before_update(db, n, force=True, reason="before_merge")
     elif title_changed or content_changed:
-        maybe_snapshot_before_update(db, n, force=bool(body.force_snapshot), reason="periodic_autosave")
-    elif body.force_snapshot:
-        maybe_snapshot_before_update(db, n, force=True, reason="manual")
+        # 하루에 한 번만 실제로 남는다 (services/versions.py).
+        maybe_snapshot_before_update(db, n, reason="periodic_autosave")
 
     if "title" in data and data["title"] is not None:
         n.title = data["title"]
@@ -333,21 +331,6 @@ def list_versions(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
         .all()
     )
     return [NoteVersionOut.model_validate(r) for r in rows]
-
-
-@router.post("/{note_id}/versions", response_model=NoteVersionOut)
-def snapshot_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
-    n = _load_with_relations(db, _uid(note_id), me.id)
-    if not n:
-        raise HTTPException(status_code=404, detail="Not found")
-    if n.deleted_at is not None:
-        raise HTTPException(status_code=400, detail="Note is in trash")
-    v = maybe_snapshot_before_update(db, n, force=True, reason="manual")
-    db.commit()
-    if v is None:
-        raise HTTPException(status_code=500, detail="Failed to snapshot")
-    db.refresh(v)
-    return NoteVersionOut.model_validate(v)
 
 
 @router.post("/{note_id}/restore-version/{version_id}", response_model=NoteDetail)

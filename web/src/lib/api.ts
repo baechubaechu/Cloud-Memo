@@ -261,7 +261,6 @@ async function patchNote(
     tag_ids: string[];
     is_favorite: boolean;
     is_archived: boolean;
-    force_snapshot: boolean;
     overlay_strokes: OverlayStroke[];
     /** 마지막으로 서버와 맞췄던 상태. revision 이 어긋나면 서버가 3-way 병합한다. */
     base_revision: number;
@@ -282,10 +281,6 @@ async function deleteNote(token: string, id: string) {
 
 async function listVersions(token: string, id: string) {
   return fetchJson(`/api/notes/${id}/versions`, {}, token) as Promise<NoteVersion[]>;
-}
-
-async function snapshotNote(token: string, id: string) {
-  return fetchJson(`/api/notes/${id}/versions`, { method: "POST" }, token) as Promise<NoteVersion>;
 }
 
 async function restoreVersion(token: string, id: string, versionId: string) {
@@ -381,7 +376,6 @@ export const api = {
   patchNote,
   deleteNote,
   listVersions,
-  snapshotNote,
   restoreVersion,
   setNoteTags,
   uploadAttachment,

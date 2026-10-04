@@ -63,7 +63,7 @@ def main() -> None:
         must("note.has tag", any(t["id"] == tag_id for t in note["tags"]))
         must("note.has folder", note["folder_id"] == folder_id)
 
-        # Update body — should not snapshot (interval 120s, fresh note).
+        # 첫 수정 — 고치기 직전 상태가 그날의 스냅샷으로 남는다.
         r = client.patch(
             f"/api/notes/{note_id}",
             headers=h,
@@ -71,25 +71,14 @@ def main() -> None:
         )
         must("note.patch v2", r.status_code == 200, r.text)
 
-        # Force a manual snapshot.
-        r = client.post(f"/api/notes/{note_id}/versions", headers=h)
-        must("note.snapshot manual", r.status_code == 200, r.text)
-        manual_v = r.json()
-        must("snapshot.reason=manual", manual_v["reason"] == "manual", manual_v)
-
-        # Patch again — content changes, should NOT make new version (within window) ...
-        # Force another snapshot reasoning by force_snapshot.
-        r = client.patch(
-            f"/api/notes/{note_id}",
-            headers=h,
-            json={"content": "추가 본문 v3", "force_snapshot": True},
-        )
-        must("note.patch v3 force", r.status_code == 200, r.text)
+        # 같은 날 다시 고쳐도 스냅샷은 늘지 않는다 (하루 한 번).
+        r = client.patch(f"/api/notes/{note_id}", headers=h, json={"content": "추가 본문 v3"})
+        must("note.patch v3", r.status_code == 200, r.text)
 
         r = client.get(f"/api/notes/{note_id}/versions", headers=h)
         must("versions.list", r.status_code == 200, r.text)
         versions = r.json()
-        must("versions >= 2", len(versions) >= 2, len(versions))
+        must("exactly one daily snapshot", len(versions) == 1, len(versions))
 
         # Restore to oldest version.
         oldest = versions[-1]
@@ -150,7 +139,6 @@ def main() -> None:
         r = client.get(f"/api/notes/{note_id}/versions", headers=h)
         reasons = [v["reason"] for v in r.json()]
         must("versions include restore", "restore" in reasons, reasons)
-        must("versions include manual", "manual" in reasons, reasons)
 
         # Markdown export.
         r = client.get("/api/export/markdown", headers=h)

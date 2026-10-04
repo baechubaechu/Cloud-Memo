@@ -32,7 +32,6 @@ $env:BACKUP_DIR                    = (Join-Path $repoRoot "data\backups")
 $env:CORS_ORIGINS                  = $origins -join ","
 $env:INITIAL_USER_EMAIL            = "admin@local"
 $env:INITIAL_USER_PASSWORD         = "1234"
-$env:VERSION_AUTOSAVE_MIN_SECONDS  = "120"
 $env:MAX_UPLOAD_MB                 = "25"
 
 # 업로드 디렉터리 보장

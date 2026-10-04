@@ -5,7 +5,7 @@ export const REASON_LABEL: Record<NoteVersion["reason"], string> = {
   before_delete: "삭제 직전",
   before_ai_edit: "AI 수정 직전",
   restore: "복원 직전",
-  periodic_autosave: "자동 저장",
+  periodic_autosave: "하루 스냅샷",
   before_merge: "동기화 병합 직전",
 };
 

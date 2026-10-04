@@ -89,7 +89,6 @@ docker compose up -d --build
 | `CORS_ORIGINS` | 허용 origin 콤마 목록. 와일드카드 금지 | localhost |
 | `NEXT_PUBLIC_API_URL` | 프런트 빌드 시 API 주소 | `http://localhost:8000` |
 | `MAX_UPLOAD_MB` | 첨부파일 1개 최대 크기 | `25` |
-| `VERSION_AUTOSAVE_MIN_SECONDS` | 자동 스냅샷 최소 간격 | `120` |
 | `DOMAIN` | Caddy가 잡을 호스트명. 진짜 도메인이면 자동 HTTPS | `localhost` |
 
 ## 운영/유틸 스크립트
@@ -145,7 +144,7 @@ cd api; .\.venv\Scripts\python -c "from app.database import SessionLocal; from a
 | 폴더 / 태그 | ✅ 드래그앤드롭 이동 |
 | 즐겨찾기 / 아카이브 | ✅ |
 | 영구 삭제 (확인 모달) | ✅ |
-| 버전 히스토리 | ✅ manual / before_delete / before_ai_edit / restore / periodic_autosave |
+| 버전 히스토리 | ✅ 하루 한 번 + 병합 직전 자동 스냅샷, 7일 보관, 되돌리기 |
 | 검색 (제목·본문·태그·첨부 파일명) | ✅ ILIKE + pg_trgm 인덱스 |
 | 이미지 첨부 + 썸네일 | ✅ Pillow 480px 자동 |
 | 저장소 사용량 | ✅ `/api/storage/usage` |
@@ -162,7 +161,7 @@ GET    /api/folders             POST /api/folders        PATCH /api/folders/{id}
 GET    /api/tags                POST /api/tags           DELETE /api/tags/{id}
 GET    /api/notes               POST /api/notes
 GET    /api/notes/{id}          PATCH /api/notes/{id}    DELETE /api/notes/{id}
-GET    /api/notes/{id}/versions POST  /api/notes/{id}/versions
+GET    /api/notes/{id}/versions
 POST   /api/notes/{id}/restore-version/{version_id}
 POST   /api/notes/{id}/attachments
 DELETE /api/attachments/{id}

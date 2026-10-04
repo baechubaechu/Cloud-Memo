@@ -27,7 +27,6 @@ import {
   IconMusic,
   IconPaperclip,
   IconRedo,
-  IconSave,
   IconStar,
   IconStop,
   IconTrash,
@@ -69,7 +68,6 @@ export type WorkbenchEditorCardProps = {
   onMoveNoteFolder: (ev: ChangeEvent<HTMLSelectElement>) => void | Promise<void>;
   onToggleFavorite: () => void | Promise<void>;
   onToggleArchive: () => void | Promise<void>;
-  onManualSnapshot: () => void | Promise<void>;
   onDeleteNote: () => void | Promise<void>;
 
   imageInputRef: RefObject<HTMLInputElement | null>;
@@ -134,7 +132,6 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
     onMoveNoteFolder,
     onToggleFavorite,
     onToggleArchive,
-    onManualSnapshot,
     onDeleteNote,
     imageInputRef,
     onPickImageFile,
@@ -253,15 +250,6 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
           }`}
         >
           <IconArchive size={15} />
-        </button>
-        <button
-          type="button"
-          onClick={() => void onManualSnapshot()}
-          title="체크포인트"
-          aria-label="체크포인트 저장"
-          className="grid h-7 w-7 place-items-center rounded hover:bg-black/5 hover:text-ink-900"
-        >
-          <IconSave size={15} />
         </button>
         <button
           type="button"
