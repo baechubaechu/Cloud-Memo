@@ -851,8 +851,9 @@ export function MemoWorkbench({
     if (!activeNoteId || !activeNote || activeNote.deleted_at) return;
     setSaveState("dirty");
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    // Defer until composition ends — onCompositionEnd will re-call scheduleAutosave.
-    if (composingRef.current) return;
+    // 한글은 마지막 글자가 "조합 중" 인 채로 멈추므로(다음 키나 포커스 이동 전까지
+    // compositionend 가 안 온다), 조합 중이라고 저장을 미루면 제목이 영영 저장되지
+    // 않는다. 저장 응답이 입력칸을 덮어쓰지 않으므로 조합 중 저장해도 글자가 깨지지 않는다.
     saveTimerRef.current = window.setTimeout(() => {
       void flushAutosave(false);
       saveTimerRef.current = null;
@@ -1007,6 +1008,11 @@ export function MemoWorkbench({
       window.setTimeout(focusTitle, 0);
     };
     document.addEventListener("focusin", onFocusIn, true);
+    // 사용자가 직접 클릭하거나 키를 누르면 가드를 즉시 푼다. 안 풀면 새 노트를 만든
+    // 직후 본문을 클릭해도 포커스가 제목으로 끌려가 캐럿이 사라진다.
+    const onUserIntent = () => armTitleFocusGuardRef.current?.dispose();
+    document.addEventListener("pointerdown", onUserIntent, true);
+    document.addEventListener("keydown", onUserIntent, true);
 
     const timers: number[] = [];
     [0, 16, 32, 64, 100, 160, 240, 360, 520, 750, 1100, 1600, 2200].forEach((ms) => {
@@ -1020,6 +1026,8 @@ export function MemoWorkbench({
 
     const dispose = () => {
       document.removeEventListener("focusin", onFocusIn, true);
+      document.removeEventListener("pointerdown", onUserIntent, true);
+      document.removeEventListener("keydown", onUserIntent, true);
       timers.forEach((t) => window.clearTimeout(t));
       window.cancelAnimationFrame(raf);
       window.clearTimeout(expire);
@@ -1561,7 +1569,7 @@ export function MemoWorkbench({
   //   3) 위 두 조건 다 아니면(예: 새 노트 열자마자 툴바 버튼만 누른 경우)
   //      문서 끝에 append. 예전엔 이 경우에도 0(=최상단) 으로 박혀버려서
   //      "이미지 위치가 항상 최상단" 처럼 보였음.
-  function insertMarkerAtCursor(marker: string): boolean {
+  function insertMarkerAtCursor(marker: string, at?: number): boolean {
     const view = editorViewRef.current;
     if (!view) return false;
     const doc = view.state.doc;
@@ -1571,7 +1579,10 @@ export function MemoWorkbench({
     //  3) 사용자가 본문을 한 번도 안 만졌으면 문서 끝(append) — "최상단으로 박히는"
     //     예전 버그 재발 방지.
     let chosen: number;
-    if (view.hasFocus) {
+    if (at !== undefined) {
+      // 호출부가 위치를 정해 준 경우(끌어다 놓기) 그대로 따른다.
+      chosen = at;
+    } else if (view.hasFocus) {
       chosen = view.state.selection.main.from;
     } else if (isLastDocCursorExplicit()) {
       chosen = getLastDocCursor();
@@ -1724,11 +1735,11 @@ export function MemoWorkbench({
   // 주의: loadNote 를 부르면 setContent 로 서버의 (마커 없는) 옛 본문이
   // 화면을 덮어써서 방금 삽입한 마커가 즉시 사라진다. 그래서 메타데이터(첨부 목록)
   // 만 갱신하고 title/content state 는 절대 건드리지 않는다.
-  async function uploadAndInsert(file: File) {
+  async function uploadAndInsert(file: File, at?: number) {
     if (!activeNoteId) return;
     try {
       const att = await api.uploadAttachment(token, activeNoteId, file);
-      insertMarkerAtCursor(buildAttachmentMarker({ ...att }));
+      insertMarkerAtCursor(buildAttachmentMarker({ ...att }), at);
       // 첨부 패널이 새 항목을 보이게끔 활성 노트 메타만 다시 가져온다.
       try {
         const fresh = await api.getNote(token, activeNoteId);
@@ -1806,6 +1817,17 @@ export function MemoWorkbench({
     if (!ok) return;
     try {
       await api.deleteAttachment(token, att.id);
+      // 본문에 남은 마커 줄도 같이 지운다 (안 지우면 깨진 자리표시만 남는다).
+      const view = editorViewRef.current;
+      if (view) {
+        const needle = `(attachment://${att.id})`;
+        const cur = view.state.doc.toString();
+        const next = cur
+          .split("\n")
+          .filter((line) => !line.includes(needle))
+          .join("\n");
+        if (next !== cur) replaceEditorDoc(next);
+      }
       if (activeNoteId) await loadNote(activeNoteId);
       void refreshUsage();
     } catch (e) {
@@ -2013,6 +2035,39 @@ export function MemoWorkbench({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [onUnauthorized, setOffline, token]);
+
+  /** 편집 영역 아무 곳에나 파일을 떨어뜨렸을 때 — 그 줄 끝에 첨부를 넣는다. */
+  function handleDropFiles(files: File[], x: number, y: number, widgetLine?: number): void {
+    const view = editorViewRef.current;
+    let anchor: number | undefined;
+    if (view) {
+      const doc = view.state.doc;
+      if (widgetLine !== undefined && widgetLine >= 1 && widgetLine <= doc.lines) {
+        anchor = doc.line(widgetLine).to;
+      } else {
+        const pos = view.posAtCoords({ x, y });
+        anchor = typeof pos === "number" ? doc.lineAt(pos).to : doc.length;
+      }
+      view.dispatch({ selection: { anchor } });
+      view.focus();
+    }
+    // 여러 개를 한 번에 놓으면 같은 줄 끝에 차례로 붙는다(뒤에 놓은 것이 위로).
+    for (const f of files) void uploadAndInsert(f, anchor);
+  }
+
+  // 편집 영역 밖(사이드바 등)에 파일을 떨어뜨리면 브라우저가 그 파일을 새 탭으로
+  // 열어 버린다. 앱 화면에서는 그 기본 동작을 막는다.
+  useEffect(() => {
+    const prevent = (ev: DragEvent) => {
+      if (ev.dataTransfer && Array.from(ev.dataTransfer.types).includes("Files")) ev.preventDefault();
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
 
   function openCommandPalette() {
     setCommandQuery("");
@@ -2480,6 +2535,7 @@ export function MemoWorkbench({
       }}
       imageInputRef={imageInputRef}
       onPickImageFile={(file) => void uploadAndInsert(file)}
+      onDropFiles={handleDropFiles}
       isRecording={isRecording}
       onToggleAudioRecording={() => {
         if (isRecording) stopAudioRecording();
@@ -2504,7 +2560,7 @@ export function MemoWorkbench({
       onTitleChange={(next) => {
         draftTitleRef.current = next;
         setTitle(next);
-        if (!composingRef.current) scheduleAutosave();
+        scheduleAutosave();
       }}
       onTitleCompositionStart={handleCompositionStart}
       onTitleCompositionEnd={handleTitleCompositionEnd}

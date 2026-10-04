@@ -6,6 +6,8 @@ import CodeMirror from "@uiw/react-codemirror";
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import {
+  useCallback,
+  useRef,
   type ChangeEvent,
   type CompositionEvent,
   type Dispatch,
@@ -40,6 +42,15 @@ import type { Folder, NoteDetail, OverlayStroke, Tag } from "@/lib/api";
 import type { SlashMenuState } from "./workbenchTypes";
 import type { RightPanelKind } from "./WorkbenchRightPanel";
 
+// 모듈 상수로 둔다. 렌더마다 새 객체를 넘기면 @uiw/react-codemirror 가 매번
+// 확장 전체를 reconfigure 한다 (키 입력마다 에디터 재구성).
+const BASIC_SETUP = {
+  lineNumbers: false,
+  foldGutter: false,
+  dropCursor: true,
+  searchKeymap: true,
+} as const;
+
 export type SaveState = "saved" | "saving" | "dirty" | "offline";
 
 export type SlashMenuEntry = {
@@ -63,6 +74,8 @@ export type WorkbenchEditorCardProps = {
 
   imageInputRef: RefObject<HTMLInputElement | null>;
   onPickImageFile: (file: File) => void | Promise<void>;
+  /** 편집 영역에 파일을 끌어다 놓았을 때 (화면 좌표와 함께). */
+  onDropFiles: (files: File[], clientX: number, clientY: number, widgetLine?: number) => void;
 
   isRecording: boolean;
   onToggleAudioRecording: () => void;
@@ -125,6 +138,7 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
     onDeleteNote,
     imageInputRef,
     onPickImageFile,
+    onDropFiles,
     isRecording,
     onToggleAudioRecording,
     rightPanel,
@@ -159,6 +173,11 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
     slashSelected,
     setSlashSelected,
   } = props;
+
+  // onChange 도 참조가 바뀌면 reconfigure 가 일어나므로 고정된 함수로 감싼다.
+  const onBodyChangeRef = useRef(onBodyChange);
+  onBodyChangeRef.current = onBodyChange;
+  const handleBodyChange = useCallback((value: string) => onBodyChangeRef.current(value), []);
 
   if (!activeNote) {
     return (
@@ -467,7 +486,26 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
         )}
       </div>
 
-      <main className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10">
+      <main
+        className="scrollbar-subtle relative flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 md:px-10"
+        // 렌더된 줄(위젯) 위나 여백에 떨어뜨린 파일은 CodeMirror 가 처리하지 않는다.
+        // 여기서 받아 주지 않으면 브라우저가 파일을 새 탭으로 연다.
+        onDragOver={(ev) => {
+          if (Array.from(ev.dataTransfer.types).includes("Files")) {
+            ev.preventDefault();
+            ev.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={(ev) => {
+          const files = Array.from(ev.dataTransfer.files);
+          if (files.length === 0) return;
+          ev.preventDefault();
+          // 렌더된 줄 위에 놓았으면 그 줄 번호를 같이 넘긴다 (좌표→위치 변환보다 정확).
+          const lineEl = (ev.target as HTMLElement).closest<HTMLElement>("[data-cm-widget-line]");
+          const n = lineEl ? Number(lineEl.dataset.cmWidgetLine) : NaN;
+          onDropFiles(files, ev.clientX, ev.clientY, Number.isFinite(n) ? n : undefined);
+        }}
+      >
         <div className="relative">
           <input
             ref={titleInputRef}
@@ -552,18 +590,11 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
               value={content}
               height="auto"
               autoFocus={false}
-              basicSetup={{
-                lineNumbers: false,
-                foldGutter: false,
-                dropCursor: true,
-                searchKeymap: true,
-              }}
+              basicSetup={BASIC_SETUP}
               extensions={codeMirrorExtensions}
               placeholder="내용은 Markdown 스타일로 자유롭게 작성하세요. 자동 저장이 켜져 있습니다."
               onCreateEditor={onEditorMount}
-              onChange={(value) => {
-                onBodyChange(value);
-              }}
+              onChange={handleBodyChange}
               className="[&_.cm-editor]:border-0 [&_.cm-editor]:bg-transparent [&_.cm-editor]:font-inherit [&_.cm-scroller]:text-[15px] [&_.cm-scroller]:leading-6 [&_.cm-content]:min-h-[58dvh] [&_.cm-content]:px-0 [&_.cm-content]:py-1"
             />
             {slashMenu && filteredSlashCommands.length > 0 ? (
