@@ -16,6 +16,15 @@ export type TodoPanelItem = {
   text: string;
 };
 
+/** 우측 "백링크" 패널 한 줄 — 현재 노트를 `[[제목]]` 으로 참조하는 다른 노트의 줄. */
+export type BacklinkItem = {
+  id: string;
+  noteId: string;
+  noteTitle: string;
+  lineIndex: number;
+  text: string;
+};
+
 /**
  * 슬래시 커맨드 메뉴의 열림 상태 + 입력 쿼리.
  * - from / to: 슬래시 토큰 `(/?)?/{query}` 의 raw doc 좌표.

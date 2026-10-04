@@ -7,9 +7,9 @@ import { IconX } from "./Icons";
 import { AuthenticatedImagePreview } from "./AuthenticatedImagePreview";
 import { REASON_LABEL, formatBytes } from "./utils";
 import type { Attachment, NoteDetail, NoteVersion } from "@/lib/api";
-import type { TodoPanelItem } from "./workbenchTypes";
+import type { BacklinkItem, TodoPanelItem } from "./workbenchTypes";
 
-export type RightPanelKind = "files" | "todos" | "versions";
+export type RightPanelKind = "files" | "todos" | "versions" | "backlinks";
 
 export type WorkbenchRightPanelProps = {
   activeNote: NoteDetail;
@@ -22,9 +22,16 @@ export type WorkbenchRightPanelProps = {
   todoLoading: boolean;
   refreshTodoItems: () => Promise<void> | void;
   toggleTodoFromPanel: (item: TodoPanelItem) => Promise<void> | void;
-  loadNote: (id: string) => Promise<void> | void;
+  /** 노트를 열고 해당 줄(0부터)로 캐럿을 옮긴다. */
+  openNoteAtLine: (noteId: string, lineIndex: number) => Promise<void> | void;
   versions: NoteVersion[];
   handleRestoreVersion: (version: NoteVersion) => Promise<void> | void;
+  backlinks: BacklinkItem[];
+  brokenLinks: string[];
+  backlinksLoading: boolean;
+  refreshBacklinks: () => Promise<void> | void;
+  /** 아직 없는 노트를 가리키는 링크를 눌렀을 때 — 그 제목으로 노트를 만들어 연다. */
+  openLinkTitle: (title: string) => Promise<void> | void;
 };
 
 export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactElement {
@@ -39,9 +46,14 @@ export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactEleme
     todoLoading,
     refreshTodoItems,
     toggleTodoFromPanel,
-    loadNote,
+    openNoteAtLine,
     versions,
     handleRestoreVersion,
+    backlinks,
+    brokenLinks,
+    backlinksLoading,
+    refreshBacklinks,
+    openLinkTitle,
   } = props;
 
   return (
@@ -76,6 +88,15 @@ export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactEleme
         </button>
         <button
           type="button"
+          onClick={() => setRightPanel("backlinks")}
+          className={`rounded px-2 py-0.5 ${
+            rightPanel === "backlinks" ? "bg-black/10 text-ink-900" : "text-ink-900/55 hover:bg-black/5"
+          }`}
+        >
+          백링크
+        </button>
+        <button
+          type="button"
           onClick={() => setRightPanel(null)}
           title="패널 닫기"
           aria-label="패널 닫기"
@@ -99,7 +120,16 @@ export function WorkbenchRightPanel(props: WorkbenchRightPanelProps): ReactEleme
             todoLoading={todoLoading}
             refreshTodoItems={refreshTodoItems}
             toggleTodoFromPanel={toggleTodoFromPanel}
-            loadNote={loadNote}
+            openNoteAtLine={openNoteAtLine}
+          />
+        ) : rightPanel === "backlinks" ? (
+          <BacklinksPanel
+            backlinks={backlinks}
+            brokenLinks={brokenLinks}
+            loading={backlinksLoading}
+            refresh={refreshBacklinks}
+            openNoteAtLine={openNoteAtLine}
+            openLinkTitle={openLinkTitle}
           />
         ) : (
           <VersionsPanel versions={versions} handleRestoreVersion={handleRestoreVersion} />
@@ -174,9 +204,9 @@ function TodosPanel(props: {
   todoLoading: boolean;
   refreshTodoItems: () => Promise<void> | void;
   toggleTodoFromPanel: (item: TodoPanelItem) => Promise<void> | void;
-  loadNote: (id: string) => Promise<void> | void;
+  openNoteAtLine: (noteId: string, lineIndex: number) => Promise<void> | void;
 }): ReactElement {
-  const { todoItems, todoLoading, refreshTodoItems, toggleTodoFromPanel, loadNote } = props;
+  const { todoItems, todoLoading, refreshTodoItems, toggleTodoFromPanel, openNoteAtLine } = props;
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -239,7 +269,7 @@ function TodosPanel(props: {
                   <button
                     type="button"
                     onClick={() => {
-                      void loadNote(item.noteId);
+                      void openNoteAtLine(item.noteId, item.lineIndex);
                     }}
                     className="min-w-0 flex-1 text-left"
                   >
@@ -259,6 +289,88 @@ function TodosPanel(props: {
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------- 백링크 ----------
+
+function BacklinksPanel(props: {
+  backlinks: BacklinkItem[];
+  brokenLinks: string[];
+  loading: boolean;
+  refresh: () => Promise<void> | void;
+  openNoteAtLine: (noteId: string, lineIndex: number) => Promise<void> | void;
+  openLinkTitle: (title: string) => Promise<void> | void;
+}): ReactElement {
+  const { backlinks, brokenLinks, loading, refresh, openNoteAtLine, openLinkTitle } = props;
+  const noteCount = new Set(backlinks.map((b) => b.noteId)).size;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-[12px] font-semibold text-ink-900">이 노트를 참조하는 노트</p>
+          <p className="text-[11px] text-ink-900/45">
+            노트 {noteCount}개 · 링크 {backlinks.length}개
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            void refresh();
+          }}
+          className="rounded border border-ink-900/10 bg-white px-2 py-1 text-[11px] text-ink-900/60 hover:bg-black/5"
+        >
+          새로고침
+        </button>
+      </div>
+      {loading ? (
+        <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
+          백링크를 찾는 중…
+        </p>
+      ) : backlinks.length === 0 ? (
+        <p className="rounded border border-ink-900/10 bg-white px-3 py-4 text-center text-[12px] text-ink-900/45">
+          아직 이 노트를 참조하는 노트가 없습니다. 다른 노트에서{" "}
+          <span className="font-mono">[[이 노트 제목]]</span> 으로 연결해 보세요.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {backlinks.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                void openNoteAtLine(item.noteId, item.lineIndex);
+              }}
+              className="block w-full rounded border border-ink-900/10 bg-white p-2 text-left hover:bg-black/[0.03]"
+            >
+              <p className="truncate text-[12px] font-semibold text-ink-900">{item.noteTitle}</p>
+              <p className="mt-1 line-clamp-2 break-words text-[12px] text-ink-900/65">{item.text}</p>
+              <p className="mt-1 text-[11px] text-ink-900/40">{item.lineIndex + 1}번째 줄</p>
+            </button>
+          ))}
+        </div>
+      )}
+      {brokenLinks.length > 0 ? (
+        <div className="space-y-1.5 border-t border-ink-900/10 pt-3">
+          <p className="text-[12px] font-semibold text-ink-900">아직 없는 노트로 가는 링크</p>
+          <p className="text-[11px] text-ink-900/45">누르면 그 제목으로 노트를 만들어 엽니다.</p>
+          <div className="flex flex-wrap gap-1">
+            {brokenLinks.map((title) => (
+              <button
+                key={title}
+                type="button"
+                onClick={() => {
+                  void openLinkTitle(title);
+                }}
+                className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100"
+              >
+                [[{title}]]
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

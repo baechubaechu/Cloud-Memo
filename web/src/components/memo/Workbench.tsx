@@ -55,8 +55,9 @@ import type {
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
 import { type OverlayDrawingLayerHandle, type OverlayDrawingTool } from "./OverlayDrawingLayer";
-import { parseChecklistLine } from "./markdown";
+import { parseChecklistLine, parseWikilinks } from "./markdown";
 import type {
+  BacklinkItem,
   ConfirmDialogState,
   ContextMenuTarget,
   DragItem,
@@ -114,7 +115,12 @@ export function MemoWorkbench({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   // 데스크탑 우측 토글 패널: 평소엔 닫혀있고 버튼으로 파일/버전/할 일 중 하나 표시
-  const [rightPanel, setRightPanel] = useState<"files" | "versions" | "todos" | null>(null);
+  const [rightPanel, setRightPanel] = useState<"files" | "versions" | "todos" | "backlinks" | null>(null);
+  const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
+  const [brokenLinks, setBrokenLinks] = useState<string[]>([]);
+  const [backlinksLoading, setBacklinksLoading] = useState(false);
+  // 기기 사본이 바뀔 때마다 +1. 사본에서 계산하는 패널(백링크)이 다시 계산하는 신호.
+  const [cacheTick, setCacheTick] = useState(0);
   const [todoItems, setTodoItems] = useState<TodoPanelItem[]>([]);
   const [todoLoading, setTodoLoading] = useState(false);
   // 옵시디언풍 폴더 트리: 어떤 폴더가 펼쳐져 있는지
@@ -542,7 +548,7 @@ export function MemoWorkbench({
             base_content: base.content,
           });
           void reloadNotes();
-          void offlineStore.putNote(updated);
+          void offlineStore.putNote(updated).then(() => setCacheTick((t) => t + 1));
           // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
           if (activeNoteIdRef.current !== noteId) {
             await offlineStore.deleteDraft(noteId);
@@ -686,6 +692,8 @@ export function MemoWorkbench({
   }, [onUnauthorized, reloadNotes, token]);
 
   useEffect(() => {
+    // 브라우저가 디스크 부족 시 사본·초안을 지우지 않도록 요청해 둔다.
+    void offlineStore.requestPersistence();
     void pushPendingDrafts();
     const onOnline = () => {
       void pushPendingDrafts();
@@ -944,6 +952,61 @@ export function MemoWorkbench({
     },
     [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, token],
   );
+
+  // ---------- 백링크: 기기 사본에서 현재 노트를 참조하는 줄을 찾는다 ----------
+
+  const refreshBacklinks = useCallback(async () => {
+    const note = activeNoteRef.current;
+    if (!note) return;
+    setBacklinksLoading(true);
+    try {
+      const all = (await offlineStore.listNotes()).filter((n) => !n.deleted_at);
+      const target = (draftTitleRef.current || note.title).trim().toLowerCase();
+      setBacklinks(
+        !target
+          ? []
+          : all
+              .filter((n) => n.id !== note.id)
+              .flatMap((n) =>
+                n.content.split("\n").flatMap((line, index) =>
+                  parseWikilinks(line).some((l) => l.title.trim().toLowerCase() === target)
+                    ? [
+                        {
+                          id: `${n.id}:${index}`,
+                          noteId: n.id,
+                          noteTitle: n.title || "무제 노트",
+                          lineIndex: index,
+                          text: line.trim(),
+                        },
+                      ]
+                    : [],
+                ),
+              )
+              .sort((a, b) => a.noteTitle.localeCompare(b.noteTitle, "ko") || a.lineIndex - b.lineIndex),
+      );
+      // 이 노트에서 나가는 링크 중 아직 없는 노트를 가리키는 것.
+      const titles = new Set(all.map((n) => (n.title || "").trim().toLowerCase()));
+      const seen = new Set<string>();
+      const broken: string[] = [];
+      for (const line of draftContentRef.current.split("\n")) {
+        for (const link of parseWikilinks(line)) {
+          const t = link.title.trim();
+          const key = t.toLowerCase();
+          if (!t || titles.has(key) || seen.has(key)) continue;
+          seen.add(key);
+          broken.push(t);
+        }
+      }
+      setBrokenLinks(broken);
+    } finally {
+      setBacklinksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (rightPanel !== "backlinks") return;
+    void refreshBacklinks();
+  }, [rightPanel, activeNote?.id, activeNote?.title, cacheTick, refreshBacklinks]);
 
   const handleCompositionStart = useCallback(() => {
     composingRef.current = true;
@@ -1880,12 +1943,16 @@ export function MemoWorkbench({
         rows = res.notes;
         for (const id of res.deleted) await offlineStore.deleteNote(id);
       }
-      const have = new Map((await offlineStore.listNotes()).map((n) => [n.id, n.change_seq]));
+      // 버전 번호만 읽어 비교한다 (본문까지 읽으면 노트가 많을 때 매번 전체를 메모리에 올린다).
+      const have = await offlineStore.noteSeqs();
+      let changed = false;
       for (const row of rows) {
         if (have.get(row.id) === row.change_seq) continue;
         await offlineStore.putNote(await api.getNote(token, row.id));
+        changed = true;
       }
       await offlineStore.setKv("cacheSeq", nextSeq);
+      if (changed || since === undefined) setCacheTick((t) => t + 1);
     } catch {
       /* 오프라인이거나 중간에 끊김 — 받은 데까지만 두고 다음에 이어서 */
     } finally {
@@ -2056,6 +2123,20 @@ export function MemoWorkbench({
       window.removeEventListener("drop", prevent);
     };
   }, []);
+
+  /** 노트를 열고 해당 줄(0부터)로 캐럿을 옮긴다 — 백링크·할 일 패널에서 쓴다. */
+  async function openNoteAtLine(noteId: string, lineIndex: number): Promise<void> {
+    if (activeNoteIdRef.current !== noteId) await loadNote(noteId);
+    // 노트가 바뀌면 에디터가 새로 만들어진다. 화면에 올라온 뒤에 옮긴다.
+    window.setTimeout(() => {
+      const view = editorViewRef.current;
+      if (!view || activeNoteIdRef.current !== noteId) return;
+      const doc = view.state.doc;
+      const line = doc.line(Math.min(Math.max(1, lineIndex + 1), doc.lines));
+      view.dispatch({ selection: { anchor: line.to }, scrollIntoView: true });
+      view.focus();
+    }, 120);
+  }
 
   function openCommandPalette() {
     setCommandQuery("");
@@ -2588,9 +2669,14 @@ export function MemoWorkbench({
         todoLoading={todoLoading}
         refreshTodoItems={refreshTodoItems}
         toggleTodoFromPanel={toggleTodoFromPanel}
-        loadNote={loadNote}
+        openNoteAtLine={openNoteAtLine}
         versions={versions}
         handleRestoreVersion={handleRestoreVersion}
+        backlinks={backlinks}
+        brokenLinks={brokenLinks}
+        backlinksLoading={backlinksLoading}
+        refreshBacklinks={refreshBacklinks}
+        openLinkTitle={(title) => navigateToWikilink(title)}
       />
     ) : null;
 

@@ -5,6 +5,7 @@
  *  - drafts: 서버에 아직 닿지 못한 편집. 저장 요청 직전에 쓰고, 서버가 받으면 지운다.
  *            "마지막으로 서버와 맞췄던 기준점" 이 같이 들어 있어, 그 사이 다른 기기가
  *            고쳤더라도 서버가 병합할 수 있다.
+ *  - seqs:   노트 id → change_seq. 사본이 낡았는지 비교할 때 본문까지 읽지 않으려고 따로 둔다.
  *  - kv:     폴더·태그 목록, 사본을 어디까지 받았는지(cacheSeq) 같은 작은 값.
  *
  * IndexedDB 를 못 쓰는 환경(사생활 보호 모드 등)에서는 조용히 아무 일도 하지 않는다.
@@ -23,10 +24,11 @@ export type PendingDraft = {
 };
 
 const DB_NAME = "cloud-memo-offline";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const DRAFTS = "drafts";
 const NOTES = "notes";
 const KV = "kv";
+const SEQS = "seqs";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -44,6 +46,7 @@ function openDb(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: "noteId" });
         if (!db.objectStoreNames.contains(NOTES)) db.createObjectStore(NOTES, { keyPath: "id" });
         if (!db.objectStoreNames.contains(KV)) db.createObjectStore(KV);
+        if (!db.objectStoreNames.contains(SEQS)) db.createObjectStore(SEQS);
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -95,7 +98,21 @@ async function listDrafts(): Promise<PendingDraft[]> {
 // ---------- 노트 사본 ----------
 
 async function putNote(note: NoteDetail): Promise<void> {
-  await run<IDBValidKey>(NOTES, "readwrite", (s) => s.put(note), "");
+  const db = await openDb();
+  if (!db) return;
+  // 사본과 버전 번호를 한 트랜잭션으로 쓴다 (둘이 어긋나면 낡은 사본을 최신으로 착각한다).
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction([NOTES, SEQS], "readwrite");
+      tx.objectStore(NOTES).put(note);
+      tx.objectStore(SEQS).put(note.change_seq, note.id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
 }
 
 async function getNote(id: string): Promise<NoteDetail | undefined> {
@@ -104,6 +121,16 @@ async function getNote(id: string): Promise<NoteDetail | undefined> {
 
 async function deleteNote(id: string): Promise<void> {
   await run<undefined>(NOTES, "readwrite", (s) => s.delete(id), undefined);
+  await run<undefined>(SEQS, "readwrite", (s) => s.delete(id), undefined);
+}
+
+/** 사본마다의 change_seq (본문은 읽지 않는다). */
+async function noteSeqs(): Promise<Map<string, number>> {
+  const keys = await run<IDBValidKey[]>(SEQS, "readonly", (s) => s.getAllKeys(), []);
+  const values = await run<number[]>(SEQS, "readonly", (s) => s.getAll(), []);
+  const out = new Map<string, number>();
+  keys.forEach((k, i) => out.set(String(k), values[i]));
+  return out;
 }
 
 async function listNotes(): Promise<NoteDetail[]> {
@@ -126,7 +153,22 @@ async function getKv<T>(key: string): Promise<T | undefined> {
  */
 async function clearCache(): Promise<void> {
   await run<undefined>(NOTES, "readwrite", (s) => s.clear(), undefined);
+  await run<undefined>(SEQS, "readwrite", (s) => s.clear(), undefined);
   await run<undefined>(KV, "readwrite", (s) => s.clear(), undefined);
+}
+
+/**
+ * 브라우저가 디스크가 부족할 때 이 사이트의 저장소를 지우지 않도록 요청한다.
+ * 거절돼도 동작에는 문제없다 (원본은 서버에 있다).
+ */
+async function requestPersistence(): Promise<boolean> {
+  try {
+    if (typeof navigator === "undefined" || !navigator.storage?.persist) return false;
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
 }
 
 export const offlineStore = {
@@ -138,6 +180,8 @@ export const offlineStore = {
   getNote,
   deleteNote,
   listNotes,
+  noteSeqs,
+  requestPersistence,
   setKv,
   getKv,
   clearCache,

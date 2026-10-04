@@ -17,8 +17,8 @@ import type { AppCommand, SlashCommand } from "./workbenchTypes";
 export type AppCommandDeps = {
   activeNoteId: string | undefined;
   drawingMode: boolean;
-  rightPanel: "files" | "todos" | "versions" | null;
-  setRightPanel: (next: "files" | "todos" | "versions" | null) => void;
+  rightPanel: "files" | "todos" | "versions" | "backlinks" | null;
+  setRightPanel: (next: "files" | "todos" | "versions" | "backlinks" | null) => void;
   setDrawingMode: Dispatch<SetStateAction<boolean>>;
   setSidebarCollapsed: (next: boolean) => void;
   imageInputRef: RefObject<HTMLInputElement | null>;
@@ -85,6 +85,14 @@ export function buildAppCommands(deps: AppCommandDeps): AppCommand[] {
       keywords: "todo checklist 할일 체크리스트",
       disabled: !activeNoteId,
       run: () => setRightPanel(rightPanel === "todos" ? null : "todos"),
+    },
+    {
+      id: "backlinks-panel",
+      title: "백링크 보기",
+      description: "이 노트를 [[제목]] 으로 참조하는 노트 목록",
+      keywords: "backlink link reference 백링크 링크 참조",
+      disabled: !activeNoteId,
+      run: () => setRightPanel(rightPanel === "backlinks" ? null : "backlinks"),
     },
     {
       id: "files-panel",

@@ -22,6 +22,7 @@ import {
   IconFile,
   IconHighlighter,
   IconImage,
+  IconLink,
   IconList,
   IconMic,
   IconMusic,
@@ -347,6 +348,17 @@ export function WorkbenchEditorCard(props: WorkbenchEditorCardProps) {
             }`}
           >
             <IconList size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setRightPanel(rightPanel === "backlinks" ? null : "backlinks")}
+            title="백링크"
+            aria-label="백링크 토글"
+            className={`grid h-7 w-7 place-items-center rounded ${
+              rightPanel === "backlinks" ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
+            }`}
+          >
+            <IconLink size={15} />
           </button>
           <button
             type="button"
