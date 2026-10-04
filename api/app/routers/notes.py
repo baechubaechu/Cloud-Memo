@@ -247,7 +247,7 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
         # 병합 결과가 이상할 때 되돌릴 수 있게 병합 직전 상태를 반드시 남긴다.
         maybe_snapshot_before_update(db, n, force=True, reason="before_merge")
     elif title_changed or content_changed:
-        # 하루에 한 번만 실제로 남는다 (services/versions.py).
+        # 한 시간에 한 번만 실제로 남는다 (services/versions.py).
         maybe_snapshot_before_update(db, n, reason="periodic_autosave")
 
     if "title" in data and data["title"] is not None:

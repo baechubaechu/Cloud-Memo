@@ -63,7 +63,7 @@ def main() -> None:
         must("note.has tag", any(t["id"] == tag_id for t in note["tags"]))
         must("note.has folder", note["folder_id"] == folder_id)
 
-        # 첫 수정 — 고치기 직전 상태가 그날의 스냅샷으로 남는다.
+        # 첫 수정 — 고치기 직전 상태가 스냅샷으로 남는다.
         r = client.patch(
             f"/api/notes/{note_id}",
             headers=h,
@@ -71,14 +71,14 @@ def main() -> None:
         )
         must("note.patch v2", r.status_code == 200, r.text)
 
-        # 같은 날 다시 고쳐도 스냅샷은 늘지 않는다 (하루 한 번).
+        # 한 시간 안에 다시 고쳐도 스냅샷은 늘지 않는다.
         r = client.patch(f"/api/notes/{note_id}", headers=h, json={"content": "추가 본문 v3"})
         must("note.patch v3", r.status_code == 200, r.text)
 
         r = client.get(f"/api/notes/{note_id}/versions", headers=h)
         must("versions.list", r.status_code == 200, r.text)
         versions = r.json()
-        must("exactly one daily snapshot", len(versions) == 1, len(versions))
+        must("exactly one snapshot within the hour", len(versions) == 1, len(versions))
 
         # Restore to oldest version.
         oldest = versions[-1]

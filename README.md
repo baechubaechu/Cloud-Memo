@@ -144,7 +144,7 @@ cd api; .\.venv\Scripts\python -c "from app.database import SessionLocal; from a
 | 폴더 / 태그 | ✅ 드래그앤드롭 이동 |
 | 즐겨찾기 / 아카이브 | ✅ |
 | 영구 삭제 (확인 모달) | ✅ |
-| 버전 히스토리 | ✅ 하루 한 번 + 병합 직전 자동 스냅샷, 7일 보관, 되돌리기 |
+| 버전 히스토리 | ✅ 편집 중 1시간마다 + 병합 직전 자동 스냅샷, 7일 보관, 되돌리기 |
 | 검색 (제목·본문·태그·첨부 파일명) | ✅ ILIKE + pg_trgm 인덱스 |
 | 이미지 첨부 + 썸네일 | ✅ Pillow 480px 자동 |
 | 저장소 사용량 | ✅ `/api/storage/usage` |
