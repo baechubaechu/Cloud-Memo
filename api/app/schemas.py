@@ -138,6 +138,15 @@ class NoteVersionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BacklinkOut(BaseModel):
+    """현재 노트를 `[[제목]]` 으로 참조하는 다른 노트의 한 줄."""
+
+    note_id: uuid.UUID
+    note_title: str
+    line_index: int
+    text: str
+
+
 class RestoreVersionBody(BaseModel):
     """Body remains optional — version_id may also come as path param."""
 

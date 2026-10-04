@@ -12,6 +12,7 @@ Path scheme:
 """
 from __future__ import annotations
 
+import re
 import uuid as uuid_pkg
 from typing import Annotated, Optional
 
@@ -24,6 +25,7 @@ from app.deps import CurrentUser
 from app.models import Attachment, Note, NoteVersion, Tag
 from app.schemas import (
     AttachmentOut,
+    BacklinkOut,
     NoteCreate,
     NoteDetail,
     NoteListItem,
@@ -312,6 +314,50 @@ def delete_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     add_tombstone(db, n)
     db.delete(n)
     db.commit()
+    return out
+
+
+# ---------------- backlinks ----------------
+
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]\n]+)\]\]")
+
+
+@router.get("/{note_id}/backlinks", response_model=list[BacklinkOut])
+def list_backlinks(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+    """이 노트를 `[[제목]]` 으로 참조하는 다른 노트의 줄들 (제목은 대소문자 무시).
+
+    기기에 사본을 두지 않는 클라이언트용. 사본이 있는 클라이언트는 직접 계산한다.
+    """
+    n = _load_with_relations(db, _uid(note_id), me.id)
+    if not n:
+        raise HTTPException(status_code=404, detail="Not found")
+    target = (n.title or "").strip().lower()
+    if not target:
+        return []
+    # LIKE 의 특수문자를 글자 그대로 찾도록 이스케이프한다.
+    escaped = target.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    rows = db.execute(
+        select(Note.id, Note.title, Note.content)
+        .where(
+            Note.user_id == me.id,
+            Note.deleted_at.is_(None),
+            Note.id != n.id,
+            Note.content.ilike(f"%[[{escaped}%", escape="\\"),
+        )
+        .order_by(Note.title)
+    ).all()
+    out: list[BacklinkOut] = []
+    for other_id, other_title, content in rows:
+        for index, line in enumerate((content or "").split("\n")):
+            if any(m.strip().lower() == target for m in _WIKILINK_RE.findall(line)):
+                out.append(
+                    BacklinkOut(
+                        note_id=other_id,
+                        note_title=other_title or "무제 노트",
+                        line_index=index,
+                        text=line.strip(),
+                    )
+                )
     return out
 
 

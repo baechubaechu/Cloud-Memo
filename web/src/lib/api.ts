@@ -279,6 +279,12 @@ async function deleteNote(token: string, id: string) {
   return fetchJson(`/api/notes/${id}`, { method: "DELETE" }, token) as Promise<NoteDetail>;
 }
 
+async function listBacklinks(token: string, id: string) {
+  return fetchJson(`/api/notes/${id}/backlinks`, {}, token) as Promise<
+    { note_id: string; note_title: string; line_index: number; text: string }[]
+  >;
+}
+
 async function listVersions(token: string, id: string) {
   return fetchJson(`/api/notes/${id}/versions`, {}, token) as Promise<NoteVersion[]>;
 }
@@ -375,6 +381,7 @@ export const api = {
   getNote,
   patchNote,
   deleteNote,
+  listBacklinks,
   listVersions,
   restoreVersion,
   setNoteTags,

@@ -963,13 +963,49 @@ export function MemoWorkbench({
     [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, token],
   );
 
-  // ---------- 백링크: 기기 사본에서 현재 노트를 참조하는 줄을 찾는다 ----------
+  // ---------- 백링크 ----------
+  // 이 기기에 사본을 보관하면 사본에서 바로 찾고(오프라인에서도 됨), 아니면 서버에 묻는다.
+
+  /** 지금 본문에서 나가는 링크 중, 주어진 제목들 어디에도 없는 것. */
+  function findBrokenLinks(existingTitles: string[]): string[] {
+    const titles = new Set(existingTitles.map((x) => (x || "").trim().toLowerCase()));
+    const seen = new Set<string>();
+    const broken: string[] = [];
+    for (const line of draftContentRef.current.split("\n")) {
+      for (const link of parseWikilinks(line)) {
+        const t = link.title.trim();
+        const key = t.toLowerCase();
+        if (!t || titles.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        broken.push(t);
+      }
+    }
+    return broken;
+  }
 
   const refreshBacklinks = useCallback(async () => {
     const note = activeNoteRef.current;
     if (!note) return;
     setBacklinksLoading(true);
     try {
+      if (!offlineStore.isActive()) {
+        const [rows, live, archived] = await Promise.all([
+          api.listBacklinks(token, note.id),
+          api.listNotes(token, { archived: false }),
+          api.listNotes(token, { archived: true }),
+        ]);
+        setBacklinks(
+          rows.map((r) => ({
+            id: `${r.note_id}:${r.line_index}`,
+            noteId: r.note_id,
+            noteTitle: r.note_title,
+            lineIndex: r.line_index,
+            text: r.text,
+          })),
+        );
+        setBrokenLinks(findBrokenLinks([...live, ...archived].map((n) => n.title)));
+        return;
+      }
       const all = (await offlineStore.listNotes()).filter((n) => !n.deleted_at);
       const target = (draftTitleRef.current || note.title).trim().toLowerCase();
       setBacklinks(
@@ -994,24 +1030,17 @@ export function MemoWorkbench({
               )
               .sort((a, b) => a.noteTitle.localeCompare(b.noteTitle, "ko") || a.lineIndex - b.lineIndex),
       );
-      // 이 노트에서 나가는 링크 중 아직 없는 노트를 가리키는 것.
-      const titles = new Set(all.map((n) => (n.title || "").trim().toLowerCase()));
-      const seen = new Set<string>();
-      const broken: string[] = [];
-      for (const line of draftContentRef.current.split("\n")) {
-        for (const link of parseWikilinks(line)) {
-          const t = link.title.trim();
-          const key = t.toLowerCase();
-          if (!t || titles.has(key) || seen.has(key)) continue;
-          seen.add(key);
-          broken.push(t);
-        }
-      }
-      setBrokenLinks(broken);
+      setBrokenLinks(findBrokenLinks(all.map((n) => n.title)));
+    } catch (e) {
+      // 오프라인인데 사본도 없으면 찾을 방법이 없다.
+      if (e instanceof ApiError) handleApiError(e);
+      setBacklinks([]);
+      setBrokenLinks([]);
     } finally {
       setBacklinksLoading(false);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleApiError, token]);
 
   useEffect(() => {
     if (rightPanel !== "backlinks") return;
