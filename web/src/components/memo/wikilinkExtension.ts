@@ -27,13 +27,15 @@ import type { EditorView } from "@codemirror/view";
 export type WikilinkNoteCandidate = {
   id: string;
   title: string;
+  path: string;
 };
 
 export type WikilinkExtensionOptions = {
-  /** 현재 사이드바에 보이는 노트 목록. 매번 최신 배열을 돌려주는 콜백이어야 한다. */
+  /** 필터·아카이브와 무관한 전체 노트 목록. 최신 경로 정보를 돌려준다. */
   getNotes: () => WikilinkNoteCandidate[];
   /** 사용자가 "+ 새 노트 만들기" 항목을 골랐을 때 백그라운드 노트 생성. */
   createNote: (title: string) => void;
+  getNewNoteTarget: (title: string) => string;
 };
 
 const NEW_NOTE_BOOST = -1; // 항상 기존 노트가 위에 오도록 약간 낮춰둔다.
@@ -103,7 +105,7 @@ function buildSource(opts: WikilinkExtensionOptions) {
     const matched = notes
       .filter((n) => {
         if (!needle) return true;
-        return (n.title || "").toLowerCase().includes(needle);
+        return n.title.toLowerCase().includes(needle) || n.path.toLowerCase().includes(needle);
       })
       .slice()
       .sort((a, b) => {
@@ -114,7 +116,7 @@ function buildSource(opts: WikilinkExtensionOptions) {
           const bStarts = bt.startsWith(needle) ? 0 : 1;
           if (aStarts !== bStarts) return aStarts - bStarts;
         }
-        return at.localeCompare(bt, "ko");
+        return at.localeCompare(bt, "ko") || a.path.localeCompare(b.path, "ko");
       })
       .slice(0, 8);
 
@@ -123,22 +125,22 @@ function buildSource(opts: WikilinkExtensionOptions) {
       return {
         label,
         type: "wikilink",
-        detail: "기존 노트",
-        apply: applyCompletion(label, trigger.from),
+        detail: n.path,
+        apply: applyCompletion(n.path, trigger.from),
       };
     });
 
     const trimmed = trigger.query.trim();
     const exactExists = trimmed
-      ? notes.some((n) => (n.title || "").toLowerCase() === trimmed.toLowerCase())
+      ? notes.some((n) => n.title.trim().toLowerCase() === trimmed.toLowerCase() || n.path.toLowerCase() === opts.getNewNoteTarget(trimmed).toLowerCase())
       : false;
     if (trimmed && !exactExists) {
-      const title = trimmed;
+      const title = opts.getNewNoteTarget(trimmed);
       options.push({
         // 직선 따옴표만 쓴다. 타이포그래픽 따옴표는 일부 글꼴에서 보조 설명 줄과 톤이 달라 보일 수 있음.
-        label: `+ 새 노트 "${title}"`,
+        label: `+ 새 노트 "${trimmed}"`,
         type: "wikilink-create",
-        detail: "이 제목으로 새 노트 만들기",
+        detail: title,
         boost: NEW_NOTE_BOOST,
         apply: (view, completion, from, to) => {
           // 1) doc 에는 다른 기존 링크와 동일한 `[[Title]] ` 를 박는다.
@@ -155,8 +157,8 @@ function buildSource(opts: WikilinkExtensionOptions) {
       from: trigger.from + 2, // `[[` 뒤부터 query.
       to: ctx.pos,
       options,
-      // 사용자가 `]` 나 줄바꿈을 입력하면 매치가 깨지므로 메뉴를 닫는다.
-      validFor: /^[^\[\]\n]*$/,
+      // 경로 검색도 가능하도록 label만 보는 기본 필터 대신 위의 필터를 사용한다.
+      filter: false,
     };
   };
 }

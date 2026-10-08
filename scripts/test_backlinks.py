@@ -27,8 +27,9 @@ class BacklinkTests(unittest.TestCase):
                 source_id = uuid.uuid4()
                 with engine.begin() as connection:
                     connection.execute(text(
-                        "CREATE TABLE notes (id TEXT, user_id TEXT, title TEXT, content TEXT, deleted_at TEXT)"
+                        "CREATE TABLE notes (id TEXT, user_id TEXT, title TEXT, content TEXT, deleted_at TEXT, folder_id TEXT)"
                     ))
+                    connection.execute(text("CREATE TABLE folders (id TEXT, user_id TEXT, name TEXT, parent_id TEXT, deleted_at TEXT)"))
                     content = f"[[{title}]]\n[[ {title.upper()} ]]\n[[\t{title}\t]]\n[[Other]]"
                     for note_id, owner, deleted in (
                         (source_id, user_id, None),
@@ -37,9 +38,9 @@ class BacklinkTests(unittest.TestCase):
                         (uuid.uuid4(), user_id, "2026-10-08"),
                     ):
                         connection.execute(text(
-                            "INSERT INTO notes VALUES (:id, :user, :title, :content, :deleted)"
+                            "INSERT INTO notes VALUES (:id, :user, :title, :content, :deleted, NULL)"
                         ), {
-                            "id": note_id.hex, "user": owner.hex, "title": "Source",
+                            "id": note_id.hex, "user": owner.hex, "title": title if note_id == target_id else "Source",
                             "content": content, "deleted": deleted,
                         })
                 with Session(engine) as session, patch.object(

@@ -75,6 +75,7 @@ import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
 import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
+import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, type LinkCandidate, type LinkNote } from "./wikilinkPaths";
 
 export function MemoWorkbench({
   token,
@@ -97,6 +98,8 @@ export function MemoWorkbench({
   const [folders, setFolders] = useState<Folder[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [notes, setNotes] = useState<NoteListItem[]>([]);
+  const [linkNotes, setLinkNotes] = useState<LinkNote[]>([]);
+  const linkCandidates = useMemo(() => buildLinkCandidates(linkNotes, folders), [linkNotes, folders]);
   const notesRef = useRef(notes);
 
   const [mode, setMode] = useState<ListMode>("active");
@@ -321,6 +324,10 @@ export function MemoWorkbench({
   const reloadNotes = useCallback(async () => {
     try {
       setError(null);
+      const [live, archived] = await Promise.all([
+        api.listNotes(token, { archived: false }), api.listNotes(token, { archived: true }),
+      ]);
+      setLinkNotes([...live, ...archived]);
       const q = debouncedQuery.trim();
       if (q.length >= 1) {
         const rows = await api.searchNotes(token, q, {
@@ -341,7 +348,7 @@ export function MemoWorkbench({
         favorite: mode === "favorite" || undefined,
         archived: mode === "archive" ? true : false,
       };
-      const rows = await api.listNotes(token, params);
+      const rows = useTreeMode ? live : await api.listNotes(token, params);
       setNotes(rows);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -353,6 +360,7 @@ export function MemoWorkbench({
       const q = debouncedQuery.trim().toLowerCase();
       const useTreeMode = mode === "active" && !selectedTagId;
       const cached = await offlineStore.listNotes();
+      setLinkNotes(cached.filter((note) => !note.deleted_at));
       setNotes(
         cached
           .filter((n) => !n.deleted_at)
@@ -977,15 +985,14 @@ export function MemoWorkbench({
   // 이 기기에 사본을 보관하면 사본에서 바로 찾고(오프라인에서도 됨), 아니면 서버에 묻는다.
 
   /** 지금 본문에서 나가는 링크 중, 주어진 제목들 어디에도 없는 것. */
-  function findBrokenLinks(existingTitles: string[]): string[] {
-    const titles = new Set(existingTitles.map((x) => (x || "").trim().toLowerCase()));
+  function findBrokenLinks(candidates: LinkCandidate[]): string[] {
     const seen = new Set<string>();
     const broken: string[] = [];
     for (const line of draftContentRef.current.split("\n")) {
       for (const link of parseWikilinks(line)) {
         const t = link.title.trim();
         const key = t.toLowerCase();
-        if (!t || titles.has(key) || seen.has(key)) continue;
+        if (!t || resolveLink(t, candidates, activeNoteRef.current?.folder_id ?? null).length === 1 || seen.has(key)) continue;
         seen.add(key);
         broken.push(t);
       }
@@ -1013,19 +1020,20 @@ export function MemoWorkbench({
             text: r.text,
           })),
         );
-        setBrokenLinks(findBrokenLinks([...live, ...archived].map((n) => n.title)));
+        setBrokenLinks(findBrokenLinks(buildLinkCandidates([...live, ...archived], folders)));
         return;
       }
       const all = (await offlineStore.listNotes()).filter((n) => !n.deleted_at);
-      const target = (draftTitleRef.current || note.title).trim().toLowerCase();
+      const candidates = buildLinkCandidates(all, folders);
       setBacklinks(
-        !target
-          ? []
-          : all
+        all
               .filter((n) => n.id !== note.id)
               .flatMap((n) =>
                 n.content.split("\n").flatMap((line, index) =>
-                  parseWikilinks(line).some((l) => l.title.trim().toLowerCase() === target)
+                  parseWikilinks(line).some((link) => {
+                    const matches = resolveLink(link.title, candidates, n.folder_id);
+                    return matches.length === 1 && matches[0].id === note.id;
+                  })
                     ? [
                         {
                           id: `${n.id}:${index}`,
@@ -1040,7 +1048,7 @@ export function MemoWorkbench({
               )
               .sort((a, b) => a.noteTitle.localeCompare(b.noteTitle, "ko") || a.lineIndex - b.lineIndex),
       );
-      setBrokenLinks(findBrokenLinks(all.map((n) => n.title)));
+      setBrokenLinks(findBrokenLinks(candidates));
     } catch (e) {
       // 오프라인인데 사본도 없으면 찾을 방법이 없다.
       if (e instanceof ApiError) handleApiError(e);
@@ -1050,7 +1058,7 @@ export function MemoWorkbench({
       setBacklinksLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleApiError, token]);
+  }, [handleApiError, token, folders]);
 
   useEffect(() => {
     if (rightPanel !== "backlinks") return;
@@ -2310,17 +2318,20 @@ export function MemoWorkbench({
   // 흐름을 끊지 않기 위해). 그 노트로 가고 싶으면 새로 박힌 위키링크를 클릭하면
   // navigateToWikilink 가 그때 연다.
   const handleCreateNoteFromWikilink = useCallback(
-    async (title: string) => {
-      const trimmed = title.trim();
-      if (!trimmed) return;
+    async (target: string) => {
+      const location = linkCreationLocation(target, folders);
+      if (!location) {
+        setError("링크의 폴더 경로를 찾을 수 없거나 같은 경로가 여러 개 있습니다.");
+        return;
+      }
       try {
-        await api.createNote(token, { title: trimmed, content: "" });
+        await api.createNote(token, { title: location.title, folder_id: location.folderId, content: "" });
         await reloadNotes();
       } catch (e) {
         handleApiError(e);
       }
     },
-    [handleApiError, reloadNotes, token],
+    [handleApiError, reloadNotes, token, folders],
   );
 
   // 위키링크 클릭 → 같은 제목 노트로 이동. 없으면 그 자리에서 만든다.
@@ -2328,24 +2339,30 @@ export function MemoWorkbench({
     async (rawTitle: string) => {
       const title = rawTitle.trim();
       if (!title) return;
-      const lower = title.toLowerCase();
-      const liveNotes = notes.filter((n) => !n.deleted_at);
-      const exact = liveNotes.find((n) => (n.title || "").toLowerCase() === lower);
-      const target =
-        exact ?? liveNotes.find((n) => (n.title || "").toLowerCase().startsWith(lower));
+      const matches = resolveLink(title, linkCandidates, activeNoteRef.current?.folder_id ?? null);
+      if (matches.length > 1) {
+        setError(`'${title}' 링크에 여러 노트가 해당합니다. 선택창에서 폴더 경로를 골라 다시 연결해 주세요.`);
+        return;
+      }
       try {
-        if (target) {
-          await loadNote(target.id);
+        if (matches.length === 1) {
+          await loadNote(matches[0].id);
           return;
         }
-        const draft = await api.createNote(token, { title, content: "" });
+        const target = newLinkTarget(title, activeNoteRef.current?.folder_id ?? null, folders);
+        const location = linkCreationLocation(target, folders);
+        if (!location) {
+          setError("링크의 폴더 경로를 찾을 수 없거나 같은 경로가 여러 개 있습니다.");
+          return;
+        }
+        const draft = await api.createNote(token, { title: location.title, folder_id: location.folderId, content: "" });
         await reloadNotes();
         await loadNote(draft.id);
       } catch (e) {
         handleApiError(e);
       }
     },
-    [handleApiError, loadNote, notes, reloadNotes, token],
+    [handleApiError, loadNote, linkCandidates, folders, reloadNotes, token],
   );
 
   memoEditorInsertFileRef.current = (file) => void uploadAndInsert(file);
@@ -2366,17 +2383,17 @@ export function MemoWorkbench({
   // 새로 만들면 CodeMirror 가 reconfig 를 일으켜 무겁고, autocomplete 메뉴가
   // 열려 있는 동안 상태가 깨진다. 그래서 실제 데이터(notes / 노트 생성 콜백) 는
   // ref 로 들고, 확장은 ref 를 통해 항상 최신 클로저를 읽는다.
-  const wikilinkNotesRef = useRef(notes);
-  wikilinkNotesRef.current = notes;
+  const wikilinkNotesRef = useRef(linkCandidates);
+  wikilinkNotesRef.current = linkCandidates;
+  const wikilinkFoldersRef = useRef(folders);
+  wikilinkFoldersRef.current = folders;
   const wikilinkCreateRef = useRef(handleCreateNoteFromWikilink);
   wikilinkCreateRef.current = handleCreateNoteFromWikilink;
   const wikilinkExt = useMemo(
     () =>
       wikilinkAutocompleteExtension({
-        getNotes: () =>
-          wikilinkNotesRef.current
-            .filter((n) => !n.deleted_at)
-            .map((n) => ({ id: n.id, title: n.title || "" })),
+        getNotes: () => wikilinkNotesRef.current,
+        getNewNoteTarget: (title) => newLinkTarget(title, activeNoteRef.current?.folder_id ?? null, wikilinkFoldersRef.current),
         createNote: (title) => void wikilinkCreateRef.current(title),
       }),
     [],

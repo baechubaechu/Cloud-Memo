@@ -1,0 +1,30 @@
+{
+  "folders": [
+    {"id":"work","name":"업무","parent_id":null},
+    {"id":"personal","name":"개인","parent_id":null},
+    {"id":"project","name":"프로젝트","parent_id":"work"},
+    {"id":"reserved","name":"A/B%","parent_id":null},
+    {"id":"duplicate","name":"업무","parent_id":null}
+  ],
+  "notes": [
+    {"id":"root","title":"회의록","folder_id":null},
+    {"id":"work-note","title":"회의록","folder_id":"project"},
+    {"id":"personal-note","title":"회의록","folder_id":"personal"},
+    {"id":"unique","title":"유일한 노트","folder_id":"work"},
+    {"id":"special","title":"회의/메모%","folder_id":"reserved"},
+    {"id":"collision-a","title":"겹친 경로","folder_id":"work"},
+    {"id":"collision-b","title":"겹친 경로","folder_id":"duplicate"}
+  ],
+  "cases": [
+    {"target":"/업무/프로젝트/회의록","source":null,"ids":["work-note"]},
+    {"target":"업무/프로젝트/회의록","source":"personal","ids":["work-note"]},
+    {"target":"/회의록","source":"personal","ids":["root"]},
+    {"target":" 회의록 ","source":"project","ids":["work-note"]},
+    {"target":"회의록","source":null,"ids":["root"]},
+    {"target":"회의록","source":"work","ids":["root","work-note","personal-note"]},
+    {"target":"유일한 노트","source":"personal","ids":["unique"]},
+    {"target":"/없는폴더/회의록","source":null,"ids":[]},
+    {"target":"/A%2FB%25/회의%2F메모%25","source":null,"ids":["special"]},
+    {"target":"/업무/겹친 경로","source":null,"ids":["collision-a","collision-b"]}
+  ]
+}

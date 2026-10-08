@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from app.database import get_db
 from app.deps import CurrentUser
-from app.models import Attachment, Note, NoteVersion, Tag
+from app.models import Attachment, Folder, Note, NoteVersion, Tag
 from app.schemas import (
     AttachmentOut,
     BacklinkOut,
@@ -39,6 +39,7 @@ from app.services.storage import resolve_storage_path
 from app.services.note_names import choose_note_title, lock_note_names
 from app.services.sync import add_tombstone, merge_text, touch_note
 from app.services.versions import maybe_snapshot_before_update
+from app.services.wikilinks import FolderRef, LinkIndex, NoteRef
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
@@ -343,12 +344,15 @@ def list_backlinks(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     n = _load_with_relations(db, _uid(note_id), me.id)
     if not n:
         raise HTTPException(status_code=404, detail="Not found")
-    target = (n.title or "").strip().lower()
-    if not target:
-        return []
-    # 제목 앞뒤 공백도 클라이언트와 동일하게 허용한다. 정확한 제목 비교는 아래에서 한다.
+    note_rows = db.execute(
+        select(Note.id, Note.title, Note.folder_id).where(Note.user_id == me.id, Note.deleted_at.is_(None))
+    ).all()
+    folder_rows = db.execute(
+        select(Folder.id, Folder.name, Folder.parent_id).where(Folder.user_id == me.id, Folder.deleted_at.is_(None))
+    ).all()
+    link_index = LinkIndex([NoteRef(*row) for row in note_rows], [FolderRef(*row) for row in folder_rows])
     rows = db.execute(
-        select(Note.id, Note.title, Note.content)
+        select(Note.id, Note.title, Note.content, Note.folder_id)
         .where(
             Note.user_id == me.id,
             Note.deleted_at.is_(None),
@@ -358,9 +362,12 @@ def list_backlinks(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
         .order_by(Note.title)
     ).all()
     out: list[BacklinkOut] = []
-    for other_id, other_title, content in rows:
+    for other_id, other_title, content, source_folder in rows:
         for index, line in enumerate((content or "").split("\n")):
-            if any(m.strip().lower() == target for m in _WIKILINK_RE.findall(line)):
+            if any(
+                len(matches := link_index.resolve(target, source_folder)) == 1 and matches[0].id == n.id
+                for target in _WIKILINK_RE.findall(line)
+            ):
                 out.append(
                     BacklinkOut(
                         note_id=other_id,
