@@ -37,7 +37,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     setKeep(offlineStore.keepOnDevice());
-    void offlineStore.purgeIfDisabled();
+    void offlineStore.purgeIfDisabled().catch((error) => setError(String(error)));
   }, []);
 
   /**

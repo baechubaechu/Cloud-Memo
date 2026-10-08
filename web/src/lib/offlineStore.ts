@@ -46,6 +46,23 @@ const PBKDF2_ITERATIONS = 600_000;
 
 let vaultKey: CryptoKey | null = null;
 let dbPromise: Promise<IDBDatabase | null> | null = null;
+let storageGeneration = 0;
+
+async function lockAndClose(): Promise<void> {
+  vaultKey = null;
+  storageGeneration += 1;
+  const pending = dbPromise;
+  dbPromise = null;
+  (await pending)?.close();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === null || [PREF_KEY, SALT_KEY, CHECK_KEY].includes(event.key)) {
+      void lockAndClose();
+    }
+  });
+}
 
 // ---------- 켜기/끄기 · 잠금 ----------
 
@@ -154,39 +171,42 @@ async function unlock(password: string, serverVerified: boolean): Promise<"ok" |
 
 /** 이 기기에 보관할지 설정한다. 끄면 남아 있던 것을 전부 지운다. */
 async function setKeepOnDevice(keep: boolean): Promise<void> {
-  try {
-    if (keep) {
-      window.localStorage.setItem(PREF_KEY, "1");
-    } else {
-      window.localStorage.removeItem(PREF_KEY);
-      await wipeAll();
-    }
-  } catch {
-    /* noop */
+  if (keep) {
+    window.localStorage.setItem(PREF_KEY, "1");
+  } else {
+    window.localStorage.removeItem(PREF_KEY);
+    await wipeAll();
   }
 }
 
 /** 사본·초안·키 재료를 이 기기에서 전부 지운다 (로그아웃, 보관 끄기). */
 async function wipeAll(): Promise<void> {
-  vaultKey = null;
+  await lockAndClose();
   try {
     window.localStorage.removeItem(SALT_KEY);
     window.localStorage.removeItem(CHECK_KEY);
   } catch {
     /* noop */
   }
-  const db = dbPromise ? await dbPromise : null;
-  db?.close();
-  dbPromise = null;
   if (typeof indexedDB === "undefined") return;
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error("기기 보관소 삭제가 지연되고 있습니다. 다른 탭을 닫고 다시 시도해 주세요."));
+    }, 5000);
     try {
       const req = indexedDB.deleteDatabase(DB_NAME);
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-      req.onblocked = () => resolve();
-    } catch {
-      resolve();
+      req.onsuccess = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      req.onerror = () => {
+        window.clearTimeout(timer);
+        reject(req.error);
+      };
+      // Other tabs close their connection in onversionchange; wait for actual deletion.
+    } catch (error) {
+      window.clearTimeout(timer);
+      reject(error);
     }
   });
 }
@@ -204,11 +224,17 @@ async function purgeIfDisabled(): Promise<void> {
 
 function openDb(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise;
+  const generation = storageGeneration;
   dbPromise = new Promise((resolve) => {
     if (typeof indexedDB === "undefined") {
       resolve(null);
       return;
     }
+    let expired = false;
+    const timer = window.setTimeout(() => {
+      expired = true;
+      resolve(null);
+    }, 5000);
     try {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
@@ -220,14 +246,34 @@ function openDb(): Promise<IDBDatabase | null> {
         db.createObjectStore(KV);
         db.createObjectStore(SEQS);
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        window.clearTimeout(timer);
+        const db = req.result;
+        if (expired || generation !== storageGeneration) {
+          db.close();
+          resolve(null);
+          return;
+        }
+        db.onversionchange = () => {
+          db.close();
+          void lockAndClose();
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        window.clearTimeout(timer);
+        resolve(null);
+      };
     } catch {
+      window.clearTimeout(timer);
       resolve(null);
     }
   });
-  return dbPromise;
+  const pending = dbPromise;
+  void pending.then((db) => {
+    if (!db && dbPromise === pending) dbPromise = null;
+  });
+  return pending;
 }
 
 async function run<T>(
@@ -250,11 +296,23 @@ async function run<T>(
   });
 }
 
-async function putSealed(storeName: string, key: string, value: unknown): Promise<void> {
+async function putSealed(storeName: string, key: string, value: unknown): Promise<boolean> {
   const k = vaultKey;
-  if (!k || !isActive()) return;
-  const sealed = await seal(k, value);
-  await run<IDBValidKey>(storeName, "readwrite", (s) => s.put(sealed, key), "");
+  if (!k || !isActive()) return false;
+  try {
+    const sealed = await seal(k, value);
+    const db = await openDb();
+    if (!db || k !== vaultKey || !isActive()) return false;
+    return await new Promise<boolean>((resolve) => {
+      const tx = db.transaction(storeName, "readwrite");
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+      tx.objectStore(storeName).put(sealed, key);
+    });
+  } catch {
+    return false;
+  }
 }
 
 async function getSealed<T>(storeName: string, key: string): Promise<T | undefined> {
@@ -278,8 +336,8 @@ async function getAllSealed<T>(storeName: string): Promise<T[]> {
 
 // ---------- drafts ----------
 
-async function putDraft(draft: PendingDraft): Promise<void> {
-  await putSealed(DRAFTS, draft.noteId, draft);
+async function putDraft(draft: PendingDraft): Promise<boolean> {
+  return putSealed(DRAFTS, draft.noteId, draft);
 }
 
 async function getDraft(noteId: string): Promise<PendingDraft | undefined> {
@@ -301,7 +359,7 @@ async function putNote(note: NoteDetail): Promise<void> {
   if (!k || !isActive()) return;
   const sealed = await seal(k, note);
   const db = await openDb();
-  if (!db) return;
+  if (!db || k !== vaultKey || !isActive()) return;
   // 사본과 버전 번호를 한 트랜잭션으로 쓴다 (둘이 어긋나면 낡은 사본을 최신으로 착각한다).
   await new Promise<void>((resolve) => {
     try {

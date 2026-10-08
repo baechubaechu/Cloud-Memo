@@ -334,15 +334,14 @@ def list_backlinks(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     target = (n.title or "").strip().lower()
     if not target:
         return []
-    # LIKE 의 특수문자를 글자 그대로 찾도록 이스케이프한다.
-    escaped = target.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # 제목 앞뒤 공백도 클라이언트와 동일하게 허용한다. 정확한 제목 비교는 아래에서 한다.
     rows = db.execute(
         select(Note.id, Note.title, Note.content)
         .where(
             Note.user_id == me.id,
             Note.deleted_at.is_(None),
             Note.id != n.id,
-            Note.content.ilike(f"%[[{escaped}%", escape="\\"),
+            Note.content.contains("[[", autoescape=True),
         )
         .order_by(Note.title)
     ).all()
