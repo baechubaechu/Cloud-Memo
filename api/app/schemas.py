@@ -64,6 +64,8 @@ class NoteCreate(BaseModel):
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
+    # 제목 편집 확정 시 중복이면 사용 가능한 무제 노트 이름으로 저장한다.
+    resolve_title_conflict: bool = False
     content: Optional[str] = None
     folder_id: Optional[uuid.UUID] = None
     tag_ids: Optional[List[uuid.UUID]] = None

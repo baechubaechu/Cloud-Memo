@@ -67,7 +67,7 @@ import type {
   TodoPanelItem,
   SlashMenuState,
 } from "./workbenchTypes";
-import { overlaySignature, todayNoteTitle, extractTodoItems, DEFAULT_NEW_NOTE_TITLE } from "./workbenchHelpers";
+import { overlaySignature, todayNoteTitle, extractTodoItems } from "./workbenchHelpers";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
@@ -86,6 +86,7 @@ export function MemoWorkbench({
   const router = useRouter();
 
   const [error, setError] = useState<string | null>(null);
+  const [titleWarning, setTitleWarning] = useState<string | null>(null);
   // 서버에 닿지 않는 동안 true. 이때는 기기에 내려받은 사본으로 동작한다.
   const [offline, setOfflineState] = useState(false);
   const offlineRef = useRef(false);
@@ -106,6 +107,7 @@ export function MemoWorkbench({
 
   const [activeNoteId, setActiveNoteId] = useState<string | undefined>(undefined);
   const [activeNote, setActiveNote] = useState<NoteDetail | undefined>(undefined);
+  useEffect(() => setTitleWarning(null), [activeNoteId]);
   const [versions, setVersions] = useState<NoteVersion[]>([]);
 
   const [title, setTitle] = useState("");
@@ -542,6 +544,7 @@ export function MemoWorkbench({
           // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
           const updated = await api.patchNote(token, noteId, {
             title: nextTitle,
+            resolve_title_conflict: document.activeElement !== titleInputRef.current,
             content: nextContent,
             base_revision: base.revision,
             base_title: base.title,
@@ -556,6 +559,12 @@ export function MemoWorkbench({
           }
 
           const merged = updated.content !== nextContent || updated.title !== nextTitle;
+          if (
+            nextTitle.trim() && updated.title !== nextTitle.trim() &&
+            /^무제 노트(?: \d+)?$/.test(updated.title)
+          ) {
+            setTitleWarning(`같은 폴더에 '${nextTitle.trim()}' 이름의 노트가 이미 있어 '${updated.title}'로 변경했습니다.`);
+          }
           const stillClean =
             draftTitleRef.current === nextTitle && draftContentRef.current === nextContent;
           if (!merged) {
@@ -589,7 +598,8 @@ export function MemoWorkbench({
           return true;
         } catch (e) {
           if (e instanceof ApiError) {
-            handleApiError(e);
+            if (e.status === 409) setTitleWarning(e.message);
+            else handleApiError(e);
             setSaveState("dirty");
             return false;
           }
@@ -1276,7 +1286,7 @@ export function MemoWorkbench({
     try {
       setError(null);
       const draft = await api.createNote(token, {
-        title: DEFAULT_NEW_NOTE_TITLE,
+        title: "",
         content: "",
         folder_id: folderId,
         tag_ids: selectedTagId ? [selectedTagId] : [],
@@ -1332,11 +1342,15 @@ export function MemoWorkbench({
       } else {
         const n = notes.find((x) => x.id === r.id);
         if (!n || draft === (n.title || "")) return;
-        await api.patchNote(token, r.id, { title: draft });
+        const updated = await api.patchNote(token, r.id, { title: draft, resolve_title_conflict: true });
+        setError(null);
         await reloadNotes();
+        if (draft && updated.title !== draft) {
+          setTitleWarning(`같은 폴더에 '${draft}' 이름의 노트가 이미 있어 '${updated.title}'로 변경했습니다.`);
+        }
         if (activeNoteId === r.id) {
-          draftTitleRef.current = draft;
-          setTitle(draft);
+          draftTitleRef.current = updated.title;
+          setTitle(updated.title);
         }
       }
     } catch (e) {
@@ -1389,8 +1403,10 @@ export function MemoWorkbench({
         return note && (note.folder_id ?? null) !== folderId;
       });
       if (targets.length === 0) return;
-      await Promise.all(targets.map((id) => api.patchNote(token, id, { folder_id: folderId })));
+      const results = await Promise.allSettled(targets.map((id) => api.patchNote(token, id, { folder_id: folderId })));
       await reloadNotes();
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") handleApiError(failed.reason);
       if (folderId) {
         setExpandedFolders((prev) => {
           const next = new Set(prev);
@@ -1456,7 +1472,7 @@ export function MemoWorkbench({
     try {
       setError(null);
       const draft = await api.createNote(token, {
-        title: DEFAULT_NEW_NOTE_TITLE,
+        title: "",
         content: "",
         folder_id: null,
         tag_ids: selectedTagId ? [selectedTagId] : [],
@@ -2679,6 +2695,12 @@ export function MemoWorkbench({
       onTitleChange={(next) => {
         draftTitleRef.current = next;
         setTitle(next);
+        const duplicate = notes.some((note) =>
+          note.id !== activeNoteId && !note.deleted_at &&
+          (note.folder_id ?? null) === (activeNote?.folder_id ?? null) &&
+          note.title.trim().toLowerCase() === next.trim().toLowerCase(),
+        );
+        setTitleWarning(duplicate ? "같은 폴더에 같은 이름의 노트가 이미 있습니다. 다른 곳을 클릭하면 무제 노트 이름으로 변경됩니다." : null);
         scheduleAutosave();
       }}
       onTitleCompositionStart={handleCompositionStart}
@@ -2740,10 +2762,10 @@ export function MemoWorkbench({
             : "오프라인 — 서버에 연결할 수 없습니다. 이 기기는 노트 보관이 꺼져 있어, 지금 열린 노트만 이어서 쓸 수 있고 연결되면 저장됩니다."}
         </div>
       ) : null}
-      {error ? (
+      {titleWarning || error ? (
         <div className="border-b border-amber-400/40 bg-amber-50 px-4 py-2 text-[13px] text-amber-900">
-          ⚠️ {error}
-          <button type="button" className="float-right ml-4 text-[11px] font-semibold" onClick={() => setError(null)}>
+          ⚠️ {titleWarning || error}
+          <button type="button" className="float-right ml-4 text-[11px] font-semibold" onClick={() => { setError(null); setTitleWarning(null); }}>
             숨김
           </button>
         </div>

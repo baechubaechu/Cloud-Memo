@@ -36,6 +36,7 @@ from app.schemas import (
 )
 from app.services.search_query import split_query as _split_query
 from app.services.storage import resolve_storage_path
+from app.services.note_names import choose_note_title, lock_note_names
 from app.services.sync import add_tombstone, merge_text, touch_note
 from app.services.versions import maybe_snapshot_before_update
 
@@ -200,7 +201,9 @@ def list_notes(
 
 @router.post("", response_model=NoteDetail)
 def create_note(body: NoteCreate, db: Db, me: CurrentUser):
-    n = Note(user_id=me.id, title=body.title, content=body.content, folder_id=body.folder_id)
+    lock_note_names(db, me.id)
+    title = choose_note_title(db, me.id, body.folder_id, body.title)
+    n = Note(user_id=me.id, title=title, content=body.content, folder_id=body.folder_id)
     db.add(n)
     db.flush()
     _sync_tags(n, body.tag_ids, db)
@@ -221,6 +224,7 @@ def get_note(note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
 
 @router.patch("/{note_id}", response_model=NoteDetail)
 def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+    lock_note_names(db, me.id)
     n = _load_with_relations(db, _uid(note_id), me.id)
     if not n:
         raise HTTPException(status_code=404, detail="Not found")
@@ -242,6 +246,14 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
             data["content"] = new_content
         if data.get("title") is not None and body.base_title is not None and data["title"] == body.base_title:
             data["title"] = n.title
+
+    next_folder = data.get("folder_id", n.folder_id)
+    next_title = data.get("title") if data.get("title") is not None else n.title
+    if next_title != n.title or next_folder != n.folder_id:
+        data["title"] = choose_note_title(
+            db, me.id, next_folder, next_title, exclude_id=n.id,
+            fallback_on_conflict=body.resolve_title_conflict and next_folder == n.folder_id,
+        )
 
     title_changed = "title" in data and data["title"] is not None and data["title"] != n.title
     content_changed = "content" in data and data["content"] is not None and data["content"] != n.content
@@ -385,6 +397,7 @@ def restore_version(
     db: Db,
     me: CurrentUser,
 ):
+    lock_note_names(db, me.id)
     n = _load_with_relations(db, _uid(note_id), me.id)
     if not n:
         raise HTTPException(status_code=404, detail="Not found")
@@ -395,8 +408,11 @@ def restore_version(
     if not v or v.note_id != n.id:
         raise HTTPException(status_code=404, detail="Version not found")
 
+    title = n.title
+    if v.title != n.title:
+        title = choose_note_title(db, me.id, n.folder_id, v.title, exclude_id=n.id)
     maybe_snapshot_before_update(db, n, force=True, reason="restore")
-    n.title = v.title
+    n.title = title
     n.content = v.content
     touch_note(db, n, text_changed=True)
     db.commit()

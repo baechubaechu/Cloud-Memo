@@ -9,7 +9,8 @@ from app.database import get_db
 from app.deps import CurrentUser
 from app.models import Folder, Note
 from app.schemas import FolderCreate, FolderOut, FolderUpdate
-from app.services.sync import touch_meta
+from app.services.sync import touch_meta, touch_note
+from app.services.note_names import choose_note_title, lock_note_names, name_key
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
@@ -71,6 +72,7 @@ def update_folder(body: FolderUpdate, folder_id: Annotated[str, Path()], db: Db,
 
 @router.delete("/{folder_id}", response_model=FolderOut)
 def delete_folder(folder_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+    lock_note_names(db, me.id)
     fid = _parse_uid(folder_id)
     folder = db.get(Folder, fid)
     if not folder or folder.user_id != me.id:
@@ -79,13 +81,26 @@ def delete_folder(folder_id: Annotated[str, Path()], db: Db, me: CurrentUser):
     child_folders = db.execute(
         select(Folder).where(Folder.user_id == me.id, Folder.parent_id == fid)
     ).scalars().all()
-    for ch in child_folders:
-        ch.parent_id = None
     child_notes = db.execute(
         select(Note).where(Note.user_id == me.id, Note.folder_id == fid)
     ).scalars().all()
+    incoming_names: set[str] = set()
     for n in child_notes:
+        if n.deleted_at is not None:
+            continue
+        title = choose_note_title(db, me.id, None, n.title, exclude_id=n.id)
+        key = name_key(title)
+        if key in incoming_names:
+            raise HTTPException(status_code=409, detail="폴더를 삭제하면 루트에 같은 이름의 노트가 생깁니다. 노트 이름을 먼저 변경해 주세요.")
+        incoming_names.add(key)
+    for ch in child_folders:
+        ch.parent_id = None
+    for n in child_notes:
+        previous_title = n.title
+        if n.deleted_at is None and not n.title.strip():
+            n.title = choose_note_title(db, me.id, None, "", exclude_id=n.id)
         n.folder_id = None
+        touch_note(db, n, text_changed=n.title != previous_title)
     out = FolderOut.model_validate(folder)
     db.delete(folder)
     touch_meta(db)

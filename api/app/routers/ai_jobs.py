@@ -20,6 +20,7 @@ from app.models import AiJob, Note
 from app.schemas import AiJobCreate, AiJobOut
 from app.services.sync import touch_note
 from app.services.versions import maybe_snapshot_before_update
+from app.services.note_names import choose_note_title, lock_note_names
 
 router = APIRouter(prefix="/ai-jobs", tags=["ai"])
 
@@ -81,6 +82,8 @@ def get_job(job_id: Annotated[str, Path()], db: Db, me: CurrentUser):
 
 @router.patch("/{job_id}", response_model=AiJobOut)
 def update_job(body: AiJobUpdate, job_id: Annotated[str, Path()], db: Db, me: CurrentUser):
+    if body.apply_to_target:
+        lock_note_names(db, me.id)
     j = db.get(AiJob, _uid(job_id))
     if not j or j.user_id != me.id:
         raise HTTPException(status_code=404, detail="Not found")
@@ -106,7 +109,8 @@ def update_job(body: AiJobUpdate, job_id: Annotated[str, Path()], db: Db, me: Cu
             new_title = j.result_payload.get("title")
             new_content = j.result_payload.get("content")
             if isinstance(new_title, str):
-                note.title = new_title
+                if new_title != note.title:
+                    note.title = choose_note_title(db, me.id, note.folder_id, new_title, exclude_id=note.id)
             if isinstance(new_content, str):
                 note.content = new_content
             touch_note(db, note, text_changed=True)
