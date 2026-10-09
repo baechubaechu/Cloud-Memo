@@ -1,0 +1,14 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const ts = require("../web/node_modules/typescript");
+const source = fs.readFileSync(require("node:path").join(__dirname, "../web/src/components/memo/templateVariables.ts"), "utf8");
+const context = { exports: {} };
+vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
+const { renderTemplate } = context.exports;
+const now = new Date(2026, 0, 2, 3, 4);
+assert.equal(renderTemplate("{{title}} / {{date}} / {{time}}", "Daily", now), "Daily / 2026-01-02 / 03:04");
+assert.equal(renderTemplate("{{title}} {{title}}", "$& {{date}}", now), "$& {{date}} $& {{date}}");
+assert.equal(renderTemplate("{{unknown}} {{date:YY}} <% unsafe %>", "Daily", now), "{{unknown}} {{date:YY}} <% unsafe %>");
+assert.equal(renderTemplate("plain text", "Daily", now), "plain text");
+console.log("PASS: template variables, padding, repeated literal substitutions, unknown syntax preserved");

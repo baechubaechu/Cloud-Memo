@@ -46,7 +46,7 @@ export function buildAppCommands(deps: AppCommandDeps): AppCommand[] {
     {
       id: "new-note",
       title: "새 노트",
-      description: "루트에 빈 노트를 만들고 제목 입력으로 이동",
+      description: "",
       shortcut: "N",
       keywords: "new note 새노트",
       run: () => void handleNewNote(),

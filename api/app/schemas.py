@@ -61,6 +61,24 @@ class NoteCreate(BaseModel):
     content: str = ""
     folder_id: Optional[uuid.UUID] = None
     tag_ids: List[uuid.UUID] = []
+    template_id: Optional[uuid.UUID] = None
+    template_timezone_offset: int = Field(default=0, ge=-840, le=840)
+
+
+class TemplateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    title: str = Field(default="", max_length=512)
+    content: str = Field(default="", max_length=1_000_000)
+    shortcut: Optional[str] = Field(default=None, pattern=r"^Mod\+Alt\+(Shift\+)?(Key[A-Z]|Digit[0-9])$")
+    target_folder_id: Optional[uuid.UUID] = None
+
+
+class TemplateOut(TemplateBody):
+    id: uuid.UUID
+
+
+class TemplateSettings(BaseModel):
+    templates: List[TemplateOut] = Field(default_factory=list)
 
 
 class NoteUpdate(BaseModel):

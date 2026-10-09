@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import uuid as uuid_pkg
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -39,6 +40,8 @@ from app.services.storage import resolve_storage_path
 from app.services.note_names import choose_note_title, lock_note_names
 from app.services.sync import add_tombstone, merge_text, touch_note
 from app.services.versions import maybe_snapshot_before_update
+from app.services.templates import load_settings
+from app.services.template_variables import render_template
 from app.services.wikilinks import FolderRef, LinkIndex, NoteRef, encode_part, folder_path, rewrite_links
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -203,8 +206,27 @@ def list_notes(
 @router.post("", response_model=NoteDetail)
 def create_note(body: NoteCreate, db: Db, me: CurrentUser):
     lock_note_names(db, me.id)
-    title = choose_note_title(db, me.id, body.folder_id, body.title)
-    n = Note(user_id=me.id, title=title, content=body.content, folder_id=body.folder_id)
+    template = None
+    if body.template_id:
+        settings = load_settings(db, me)
+        template = next((t for t in settings.templates if t.id == body.template_id), None)
+        if template is None:
+            raise HTTPException(status_code=404, detail="템플릿을 찾을 수 없습니다.")
+    now = datetime.now(timezone(timedelta(minutes=-body.template_timezone_offset)))
+    requested_title = body.title
+    if template and not requested_title.strip() and template.title:
+        existing = {t.strip().lower() for t in db.scalars(select(Note.title).where(
+            Note.user_id == me.id, Note.folder_id == body.folder_id, Note.deleted_at.is_(None)
+        ))}
+        template_title = render_template(template.title, "무제 노트", now).strip()
+        requested_title = template_title
+        number = 2
+        while requested_title.lower() in existing:
+            requested_title = f"{template_title} {number}"
+            number += 1
+    title = choose_note_title(db, me.id, body.folder_id, requested_title)
+    content = render_template(template.content, title, now) if template and "content" not in body.model_fields_set else body.content
+    n = Note(user_id=me.id, title=title, content=content, folder_id=body.folder_id)
     db.add(n)
     db.flush()
     _sync_tags(n, body.tag_ids, db)

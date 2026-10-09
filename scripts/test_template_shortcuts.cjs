@@ -1,0 +1,18 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+const ts = require("../web/node_modules/typescript");
+const source = fs.readFileSync(require("node:path").join(__dirname, "../web/src/components/memo/templateShortcuts.ts"), "utf8");
+const context = { exports: {} };
+vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
+const { templateShortcut, shortcutLabel } = context.exports;
+const event = { ctrlKey: true, metaKey: false, altKey: true, shiftKey: false, code: "KeyR", isComposing: false, keyCode: 82 };
+assert.equal(templateShortcut(event), "Mod+Alt+KeyR");
+assert.equal(templateShortcut({ ...event, ctrlKey: false, metaKey: true, shiftKey: true }), "Mod+Alt+Shift+KeyR");
+assert.equal(templateShortcut({ ...event, isComposing: true }), null);
+assert.equal(templateShortcut({ ...event, keyCode: 229 }), null);
+assert.equal(templateShortcut({ ...event, altKey: false }), null);
+assert.equal(templateShortcut({ ...event, code: "Delete" }), null);
+assert.equal(templateShortcut({ ...event, ctrlKey: false }), null);
+assert.equal(shortcutLabel("Mod+Alt+Shift+KeyR"), "Ctrl/Cmd+Alt+Shift+R");
+console.log("PASS: template shortcut modifiers, IME guards, reserved combinations, labels");

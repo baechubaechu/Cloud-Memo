@@ -5,7 +5,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { IconArchive, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
+import { IconArchive, IconFile, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
 import {
   cmEditorVisualTheme,
   editorChecklistAutoTrigger,
@@ -51,6 +51,8 @@ import type {
   StorageUsage,
   SyncChanges,
   Tag,
+  NoteTemplate,
+  TemplateSettings,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
@@ -75,7 +77,10 @@ import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
 import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands, buildSlashCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
-import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, type LinkCandidate, type LinkNote } from "./wikilinkPaths";
+import { TemplateManager } from "./TemplateManager";
+import { templateShortcut, shortcutLabel } from "./templateShortcuts";
+import { renderTemplate } from "./templateVariables";
+import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, folderLinkPath, type LinkCandidate, type LinkNote } from "./wikilinkPaths";
 
 export function MemoWorkbench({
   token,
@@ -119,6 +124,9 @@ export function MemoWorkbench({
   const [tags, setTags] = useState<Tag[]>([]);
   const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [linkNotes, setLinkNotes] = useState<LinkNote[]>([]);
+  const [templateSettings, setTemplateSettings] = useState<TemplateSettings>({ templates: [] });
+  const [templateDialog, setTemplateDialog] = useState<boolean | null>(null);
+  const templateCreationBusy = useRef(false);
   const linkCandidates = useMemo(() => buildLinkCandidates(linkNotes, folders), [linkNotes, folders]);
   const notesRef = useRef(notes);
 
@@ -275,11 +283,13 @@ export function MemoWorkbench({
   const refreshMeta = useCallback(async () => {
     try {
       setError(null);
-      const [folderRows, tagRows] = await Promise.all([api.listFolders(token), api.listTags(token)]);
+      const [folderRows, tagRows, templates] = await Promise.all([api.listFolders(token), api.listTags(token), api.listTemplates(token)]);
       const liveFolders = folderRows.filter((f) => !f.deleted_at);
       const liveTags = tagRows.filter((t) => !t.deleted_at);
       setFolders(liveFolders);
       setTags(liveTags);
+      setTemplateSettings(templates);
+      void offlineStore.setKv("templates", templates);
       void offlineStore.setKv("folders", liveFolders);
       void offlineStore.setKv("tags", liveTags);
     } catch (e) {
@@ -291,6 +301,7 @@ export function MemoWorkbench({
       setOffline(true);
       setFolders((await offlineStore.getKv<Folder[]>("folders")) ?? []);
       setTags((await offlineStore.getKv<Tag[]>("tags")) ?? []);
+      setTemplateSettings((await offlineStore.getKv<TemplateSettings>("templates")) ?? { templates: [] });
     }
   }, [handleApiError, setOffline, token]);
 
@@ -477,7 +488,7 @@ export function MemoWorkbench({
   }, [notes]);
 
   useEffect(() => {
-    if (selectedNoteIds.size === 0) return;
+    if (selectedNoteIds.size === 0 || templateDialog || confirmDialog) return;
     const onKeyDownDelete = (ev: KeyboardEvent) => {
       if (ev.key !== "Delete") return;
       const target = ev.target as HTMLElement | null;
@@ -496,7 +507,7 @@ export function MemoWorkbench({
     };
     document.addEventListener("keydown", onKeyDownDelete);
     return () => document.removeEventListener("keydown", onKeyDownDelete);
-  }, [handleDeleteSelectedNotes, selectedNoteIds.size]);
+  }, [handleDeleteSelectedNotes, selectedNoteIds.size, templateDialog, confirmDialog]);
 
   /** 제목 input·CodeMirror 에만 있고 아직 ref/state 에 안 올라온 글자까지 플러시에 포함 */
   function syncDraftFromDom(): void {
@@ -1314,8 +1325,6 @@ export function MemoWorkbench({
     try {
       setError(null);
       const draft = await api.createNote(token, {
-        title: "",
-        content: "",
         folder_id: folderId,
         tag_ids: selectedTagId ? [selectedTagId] : [],
       });
@@ -1500,15 +1509,43 @@ export function MemoWorkbench({
     try {
       setError(null);
       const draft = await api.createNote(token, {
-        title: "",
-        content: "",
         folder_id: null,
         tag_ids: selectedTagId ? [selectedTagId] : [],
       });
       await activateFreshDraft(draft);
+      setSelectedFolderId(undefined);
     } catch (e) {
       handleApiError(e);
     }
+  }
+
+  async function handleTemplateNote(template: NoteTemplate) {
+    if (templateCreationBusy.current) return false;
+    templateCreationBusy.current = true;
+    try {
+      setError(null);
+      const current = activeNoteRef.current;
+      if (current && !current.deleted_at) {
+        if (!(await flushDraftForNote(current.id, current)) || !(await flushOverlayForNote(current.id))) return false;
+      }
+      const draft = await api.createNote(token, { template_id: template.id, folder_id: template.target_folder_id, template_timezone_offset: new Date().getTimezoneOffset() });
+      await activateFreshDraft(draft);
+      setTemplateDialog(null);
+      setSelectedFolderId(template.target_folder_id ?? undefined);
+      setExpandedFolders((previous) => {
+        const next = new Set(previous);
+        let folderId = template.target_folder_id;
+        const seen = new Set<string>();
+        while (folderId && !seen.has(folderId)) {
+          seen.add(folderId);
+          next.add(folderId);
+          folderId = folders.find((folder) => folder.id === folderId)?.parent_id ?? null;
+        }
+        return next;
+      });
+      return true;
+    } catch (e) { handleApiError(e); return false; }
+    finally { templateCreationBusy.current = false; }
   }
 
   async function handleOpenTodayNote() {
@@ -1785,6 +1822,19 @@ export function MemoWorkbench({
       scrollIntoView: true,
     });
     view.focus();
+    return true;
+  }
+
+  function handleTemplateInsert(template: NoteTemplate): boolean {
+    const note = activeNoteRef.current;
+    const view = editorViewRef.current;
+    if (!note || note.deleted_at || !view || composingRef.current || view.composing) return false;
+    const inserted = insertTextAtCursor(renderTemplate(template.content, titleInputRef.current?.value ?? draftTitleRef.current));
+    if (!inserted) return false;
+    setTemplateDialog(null);
+    window.setTimeout(() => {
+      if (activeNoteIdRef.current === note.id && editorViewRef.current === view) view.focus();
+    }, 0);
     return true;
   }
 
@@ -2243,6 +2293,7 @@ export function MemoWorkbench({
 
   useEffect(() => {
     const onKeyDown = (ev: KeyboardEvent) => {
+      if (templateDialog || confirmDialog || ev.isComposing || ev.keyCode === 229) return;
       if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === "k" || ev.key.toLowerCase() === "p")) {
         ev.preventDefault();
         openCommandPalette();
@@ -2250,7 +2301,23 @@ export function MemoWorkbench({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [templateDialog, confirmDialog]);
+
+  const templateCreateRef = useRef(handleTemplateNote);
+  templateCreateRef.current = handleTemplateNote;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (templateDialog || confirmDialog || commandPaletteOpen || event.repeat || event.getModifierState("AltGraph")) return;
+      const shortcut = templateShortcut(event);
+      if (!shortcut) return;
+      const template = templateSettings.templates.find((item) => item.shortcut === shortcut);
+      if (!template) return;
+      event.preventDefault(); event.stopPropagation();
+      void templateCreateRef.current(template);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [templateSettings, templateDialog, confirmDialog, commandPaletteOpen]);
 
   useEffect(() => {
     if (!commandPaletteOpen) return;
@@ -2269,7 +2336,22 @@ export function MemoWorkbench({
     handleNewNote,
     handleOpenTodayNote,
     handleExport,
-  });
+  }).concat([
+    { id: "manage-templates", title: "노트 템플릿 관리", description: "", keywords: "template 템플릿 양식", run: () => setTemplateDialog(true) },
+    ...templateSettings.templates.map((template) => ({
+      id: `template-${template.id}`, title: `${template.name} 새 노트`,
+      description: folderLinkPath(template.target_folder_id, folders) || "루트",
+      shortcut: shortcutLabel(template.shortcut), keywords: `template 템플릿 ${template.name}`,
+      disabled: !!template.target_folder_id && !folders.some((folder) => folder.id === template.target_folder_id),
+      run: () => void handleTemplateNote(template),
+    })),
+    ...templateSettings.templates.map((template) => ({
+      id: `insert-template-${template.id}`, title: `${template.name} 현재 노트에 삽입`,
+      description: "", keywords: `template 템플릿 삽입 ${template.name}`,
+      disabled: !activeNote || !!activeNote.deleted_at || !template.content,
+      run: () => void handleTemplateInsert(template),
+    })),
+  ]);
 
   const commandNeedle = commandQuery.trim().toLowerCase();
   const filteredAppCommands = appCommands.filter((cmd) => {
@@ -2305,7 +2387,7 @@ export function MemoWorkbench({
   }, [slashMenu?.from, slashMenu?.query, filteredSlashCommands.length]);
 
   useEffect(() => {
-    if (!slashMenu) return;
+    if (!slashMenu || templateDialog || confirmDialog) return;
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
         ev.preventDefault();
@@ -2331,7 +2413,7 @@ export function MemoWorkbench({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [filteredSlashCommands, slashMenu, slashSelected]);
+  }, [filteredSlashCommands, slashMenu, slashSelected, templateDialog, confirmDialog]);
 
   // ---------- 위키링크 클릭 네비게이션 + 신규 노트 생성 ----------
 
@@ -2348,7 +2430,7 @@ export function MemoWorkbench({
         return;
       }
       try {
-        await api.createNote(token, { title: location.title, folder_id: location.folderId, content: "" });
+        await api.createNote(token, { title: location.title, folder_id: location.folderId });
         await reloadNotes();
       } catch (e) {
         handleApiError(e);
@@ -2378,7 +2460,7 @@ export function MemoWorkbench({
           setError("링크의 폴더 경로를 찾을 수 없거나 같은 경로가 여러 개 있습니다.");
           return;
         }
-        const draft = await api.createNote(token, { title: location.title, folder_id: location.folderId, content: "" });
+        const draft = await api.createNote(token, { title: location.title, folder_id: location.folderId });
         await reloadNotes();
         await loadNote(draft.id);
       } catch (e) {
@@ -2503,6 +2585,7 @@ export function MemoWorkbench({
           </button>
         );
       })}
+      <button type="button" title="노트 템플릿" aria-label="노트 템플릿" onClick={() => setTemplateDialog(true)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/5 hover:text-ink-900"><IconFile size={16} /></button>
       <button
         type="button"
         title="로그아웃"
@@ -2832,6 +2915,14 @@ export function MemoWorkbench({
         }}
       />
 
+      {templateDialog ? <TemplateManager
+        token={token} settings={templateSettings} folders={folders}
+        onSettings={(settings) => { setTemplateSettings(settings); void offlineStore.setKv("templates", settings); }}
+        onClose={() => setTemplateDialog(null)} onCreate={handleTemplateNote}
+        canInsert={!!activeNote && !activeNote.deleted_at} onInsert={handleTemplateInsert}
+        confirm={(message) => askConfirm({ title: "템플릿 변경", message, confirmLabel: "확인" })}
+        confirmationOpen={!!confirmDialog}
+      /> : null}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div
           className={`grid min-h-0 flex-1 ${

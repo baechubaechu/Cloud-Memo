@@ -18,6 +18,19 @@ export type Tag = {
   deleted_at?: string | null;
 };
 
+export type NoteTemplate = {
+  id: string;
+  name: string;
+  title: string;
+  content: string;
+  shortcut: string | null;
+  target_folder_id: string | null;
+};
+export type TemplateBody = Omit<NoteTemplate, "id">;
+export type TemplateSettings = {
+  templates: NoteTemplate[];
+};
+
 export type Attachment = {
   id: string;
   original_filename: string;
@@ -206,6 +219,21 @@ async function deleteFolder(token: string, id: string) {
   return fetchJson(`/api/folders/${id}`, { method: "DELETE" }, token) as Promise<Folder>;
 }
 
+async function listTemplates(token: string) {
+  return fetchJson("/api/templates", {}, token) as Promise<TemplateSettings>;
+}
+
+async function saveTemplate(token: string, id: string | null, body: TemplateBody) {
+  return fetchJson(id ? `/api/templates/${id}` : "/api/templates", {
+    method: id ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }, token) as Promise<TemplateSettings>;
+}
+
+async function deleteTemplate(token: string, id: string) {
+  return fetchJson(`/api/templates/${id}`, { method: "DELETE" }, token) as Promise<TemplateSettings>;
+}
+
+
 async function listTags(token: string, trash?: boolean) {
   const qs = trash ? "?trash=true" : "";
   return fetchJson(`/api/tags${qs}`, {}, token) as Promise<Tag[]>;
@@ -240,7 +268,7 @@ async function searchNotes(token: string, q: string, opts: { trash?: boolean; ar
 
 async function createNote(
   token: string,
-  payload: { title?: string; content?: string; folder_id?: string | null; tag_ids?: string[] },
+  payload: { title?: string; content?: string; folder_id?: string | null; tag_ids?: string[]; template_id?: string; template_timezone_offset?: number },
 ) {
   return fetchJson(
     "/api/notes",
@@ -375,6 +403,9 @@ export const api = {
   listFolders,
   createFolder,
   patchFolder,
+  listTemplates,
+  saveTemplate,
+  deleteTemplate,
   deleteFolder,
   listTags,
   createTag,

@@ -185,12 +185,21 @@ export function ConfirmDialog({ state, onResolve }: ConfirmDialogProps) {
   if (!state) return null;
   return (
     <div className="fixed inset-0 z-[80] grid place-items-center bg-black/30 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl ring-1 ring-ink-900/15">
+      <div role="dialog" aria-modal="true" aria-label={state.title} onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); onResolve(false); }
+        if (event.key === "Tab") {
+          const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+          const first = buttons[0], last = buttons[buttons.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      }} className="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl ring-1 ring-ink-900/15">
         <h3 className="text-[15px] font-semibold text-ink-900">{state.title}</h3>
         <p className="mt-2 whitespace-pre-line text-[13px] text-ink-900/75">{state.message}</p>
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
+            autoFocus
             className="rounded-md border border-ink-900/20 px-3 py-1.5 text-[12px] text-ink-900/75 hover:bg-black/5"
             onClick={() => onResolve(false)}
           >
