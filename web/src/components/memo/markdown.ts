@@ -1,3 +1,5 @@
+import { wikilinkDisplayLabel } from "./wikilinkPaths";
+
 export function escapeHtml(s: string): string {
   return s
     .replaceAll("&", "&amp;")
@@ -107,12 +109,13 @@ function renderAttachmentPlaceholderHtml(m: AttachmentMarker): string {
 }
 
 export function renderInlineMarkdown(s: string): string {
-  let out = escapeHtml(s);
-  // Obsidian wikilink: [[note-name]]
-  out = out.replace(
-    /\[\[([^\]]+)\]\]/g,
-    `<a class="memo-wikilink text-indigo-700 underline underline-offset-2" href="#" data-link="$1">$1</a>`,
-  );
+  let out = s.split(/(\[\[[^\[\]\n]+\]\])/g).map((part) => {
+    const match = part.match(/^\[\[([^\[\]\n]+)\]\]$/);
+    if (!match) return escapeHtml(part);
+    const target = escapeHtml(match[1]);
+    const label = escapeHtml(wikilinkDisplayLabel(match[1]));
+    return `<a class="memo-wikilink text-indigo-700 underline underline-offset-2" href="#" data-link="${target}" title="${target}">${label}</a>`;
+  }).join("");
   // Markdown link: [text](url)
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
@@ -128,6 +131,12 @@ export type WikilinkRange = {
   to: number;
   title: string;
 };
+
+export function isWikilinkEditPosition(line: string, link: WikilinkRange, cursor: number): boolean {
+  const from = link.from > 0 && /[ \t]/.test(line[link.from - 1]) ? link.from - 1 : link.from;
+  const to = link.to < line.length && /[ \t]/.test(line[link.to]) ? link.to + 1 : link.to;
+  return cursor >= from && cursor <= to;
+}
 
 export function parseWikilinks(line: string): WikilinkRange[] {
   const out: WikilinkRange[] = [];

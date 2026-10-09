@@ -8,6 +8,7 @@ export type Folder = {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  updated_link_note_count?: number | null;
 };
 
 export type Tag = {
@@ -72,6 +73,7 @@ export type NoteDetail = {
   overlay_strokes: OverlayStroke[];
   revision: number;
   change_seq: number;
+  updated_link_note_count?: number | null;
 };
 
 /** `GET /api/sync/changes` 응답 — `since` 이후 다른 곳에서 바뀐 것. */
@@ -87,7 +89,7 @@ export type NoteVersion = {
   version_index: number;
   title: string;
   content: string;
-  reason: "manual" | "before_delete" | "before_ai_edit" | "restore" | "periodic_autosave" | "before_merge";
+  reason: "manual" | "before_delete" | "before_ai_edit" | "restore" | "periodic_autosave" | "before_merge" | "before_link_update";
   created_at: string;
 };
 

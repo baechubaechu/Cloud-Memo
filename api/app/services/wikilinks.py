@@ -1,5 +1,6 @@
 """Resolve absolute folder paths and legacy title links without guessing a target."""
 from dataclasses import dataclass
+import re
 from urllib.parse import quote, unquote
 from uuid import UUID
 
@@ -63,3 +64,18 @@ class LinkIndex:
         matches = self.titles.get(target.lower(), [])
         local = [note for note in matches if note.folder_id == source_folder]
         return local or matches
+
+
+def rewrite_links(content: str, source_folder: UUID | None, index: LinkIndex,
+                  target_id: UUID, new_path: str) -> str:
+    return rewrite_link_paths(content, source_folder, index, {target_id: new_path})
+
+
+def rewrite_link_paths(content: str, source_folder: UUID | None, index: LinkIndex,
+                       new_paths: dict[UUID, str]) -> str:
+    def replace(match):
+        targets = index.resolve(match[1], source_folder)
+        if len(targets) == 1 and targets[0].id in new_paths:
+            return f"[[{new_paths[targets[0].id]}]]"
+        return match[0]
+    return re.sub(r"\[\[([^\[\]\n]+)\]\]", replace, content)

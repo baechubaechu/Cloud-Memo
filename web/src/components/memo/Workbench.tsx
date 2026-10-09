@@ -88,6 +88,26 @@ export function MemoWorkbench({
 
   const [error, setError] = useState<string | null>(null);
   const [titleWarning, setTitleWarning] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<{ count: number } | null>(null);
+  const patchNote = useCallback(async (...args: Parameters<typeof api.patchNote>) => {
+    const updated = await api.patchNote(...args);
+    if (updated.updated_link_note_count != null) {
+      setLinkNotice({ count: updated.updated_link_note_count });
+    }
+    return updated;
+  }, []);
+  const patchFolder = useCallback(async (...args: Parameters<typeof api.patchFolder>) => {
+    const updated = await api.patchFolder(...args);
+    if (updated.updated_link_note_count != null) {
+      setLinkNotice({ count: updated.updated_link_note_count });
+    }
+    return updated;
+  }, []);
+  useEffect(() => {
+    if (!linkNotice) return;
+    const timer = window.setTimeout(() => setLinkNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [linkNotice]);
   // 서버에 닿지 않는 동안 true. 이때는 기기에 내려받은 사본으로 동작한다.
   const [offline, setOfflineState] = useState(false);
   const offlineRef = useRef(false);
@@ -550,7 +570,7 @@ export function MemoWorkbench({
           setSaveState("saving");
           // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
           // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
-          const updated = await api.patchNote(token, noteId, {
+          const updated = await patchNote(token, noteId, {
             title: nextTitle,
             resolve_title_conflict: document.activeElement !== titleInputRef.current,
             content: nextContent,
@@ -647,7 +667,7 @@ export function MemoWorkbench({
         overlayTimerRef.current = null;
       }
       try {
-        await api.patchNote(token, noteId, { overlay_strokes: strokes });
+        await patchNote(token, noteId, { overlay_strokes: strokes });
         lastSentRef.current = { ...lastSentRef.current, overlayKey: sig };
         return true;
       } catch (e) {
@@ -680,7 +700,7 @@ export function MemoWorkbench({
     for (const d of drafts) {
       if (d.noteId === activeNoteIdRef.current) continue;
       try {
-        await api.patchNote(token, d.noteId, {
+        await patchNote(token, d.noteId, {
           title: d.title,
           content: d.content,
           base_revision: d.baseRevision,
@@ -856,7 +876,7 @@ export function MemoWorkbench({
     overlayTimerRef.current = window.setTimeout(async () => {
       overlayTimerRef.current = null;
       try {
-        const updated = await api.patchNote(token, activeNoteId, {
+        const updated = await patchNote(token, activeNoteId, {
           overlay_strokes: overlayStrokes,
         });
         lastSentRef.current = {
@@ -944,7 +964,7 @@ export function MemoWorkbench({
         const base = isActive
           ? baseRef.current
           : { revision: note.revision, title: note.title, content: note.content };
-        const updated = await api.patchNote(token, item.noteId, {
+        const updated = await patchNote(token, item.noteId, {
           content: nextContent,
           title: nextTitle,
           base_revision: base.revision,
@@ -1345,12 +1365,12 @@ export function MemoWorkbench({
       if (r.kind === "folder") {
         const f = folderOptions.find((x) => x.id === r.id);
         if (!f || !draft || draft === f.name) return;
-        await api.patchFolder(token, r.id, { name: draft });
+        await patchFolder(token, r.id, { name: draft });
         await refreshMeta();
       } else {
         const n = notes.find((x) => x.id === r.id);
         if (!n || draft === (n.title || "")) return;
-        const updated = await api.patchNote(token, r.id, { title: draft, resolve_title_conflict: true });
+        const updated = await patchNote(token, r.id, { title: draft, resolve_title_conflict: true });
         setError(null);
         await reloadNotes();
         if (draft && updated.title !== draft) {
@@ -1389,7 +1409,7 @@ export function MemoWorkbench({
     try {
       const note = notes.find((n) => n.id === noteId);
       if (note && (note.folder_id ?? null) === folderId) return;
-      await api.patchNote(token, noteId, { folder_id: folderId });
+      await patchNote(token, noteId, { folder_id: folderId });
       await reloadNotes();
       if (folderId) {
         setExpandedFolders((prev) => {
@@ -1411,7 +1431,7 @@ export function MemoWorkbench({
         return note && (note.folder_id ?? null) !== folderId;
       });
       if (targets.length === 0) return;
-      const results = await Promise.allSettled(targets.map((id) => api.patchNote(token, id, { folder_id: folderId })));
+      const results = await Promise.allSettled(targets.map((id) => patchNote(token, id, { folder_id: folderId })));
       await reloadNotes();
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") handleApiError(failed.reason);
@@ -1440,7 +1460,7 @@ export function MemoWorkbench({
           cur = p?.parent_id ?? null;
         }
       }
-      await api.patchFolder(token, folderId, { parent_id: parentId });
+      await patchFolder(token, folderId, { parent_id: parentId });
       await refreshMeta();
       if (parentId) {
         setExpandedFolders((prev) => {
@@ -1620,7 +1640,7 @@ export function MemoWorkbench({
     const id = ev.target.value;
     try {
       setSaveState("saving");
-      const updated = await api.patchNote(token, activeNoteId, { folder_id: id || null });
+      const updated = await patchNote(token, activeNoteId, { folder_id: id || null });
       setActiveNote(updated);
       setSaveState("saved");
       void reloadNotes();
@@ -1664,7 +1684,7 @@ export function MemoWorkbench({
   async function toggleFavorite() {
     if (!activeNoteId || !activeNote) return;
     try {
-      const updated = await api.patchNote(token, activeNoteId, { is_favorite: !activeNote.is_favorite });
+      const updated = await patchNote(token, activeNoteId, { is_favorite: !activeNote.is_favorite });
       setActiveNote(updated);
       void reloadNotes();
     } catch (e) {
@@ -1675,7 +1695,7 @@ export function MemoWorkbench({
   async function toggleArchive() {
     if (!activeNoteId || !activeNote) return;
     try {
-      const updated = await api.patchNote(token, activeNoteId, { is_archived: !activeNote.is_archived });
+      const updated = await patchNote(token, activeNoteId, { is_archived: !activeNote.is_archived });
       setActiveNote(updated);
       void reloadNotes();
     } catch (e) {
@@ -1976,7 +1996,10 @@ export function MemoWorkbench({
     if (!activeNoteId) return;
     if (!window.confirm(`버전 #${v.version_index} (${REASON_LABEL[v.reason]}) 으로 되돌릴까요?`)) return;
     try {
-      await api.restoreVersion(token, activeNoteId, v.id);
+      const restored = await api.restoreVersion(token, activeNoteId, v.id);
+      if (restored.updated_link_note_count != null) {
+        setLinkNotice({ count: restored.updated_link_note_count });
+      }
       await loadNote(activeNoteId);
     } catch (e) {
       handleApiError(e);
@@ -2772,6 +2795,13 @@ export function MemoWorkbench({
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-white">
+      {linkNotice ? (
+        <div role="status" aria-live="polite" className="pointer-events-none fixed left-1/2 top-4 z-50 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-800 shadow-lg">
+          {linkNotice.count > 0
+            ? `${linkNotice.count}개 노트의 링크가 변경되었습니다.`
+            : "이름·경로가 변경되었습니다. 갱신할 링크는 없습니다."}
+        </div>
+      ) : null}
       {offline ? (
         <div className="border-b border-slate-300 bg-slate-100 px-4 py-1.5 text-[12px] text-slate-700">
           {offlineStore.isActive()

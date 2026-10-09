@@ -7,6 +7,7 @@ import {
 } from "./markdown";
 import { hydrateAttachmentsIn, hydrateWikilinksIn } from "./editorHydrate";
 import { getMemoEditorContext } from "./editorContext";
+import { wikilinkDisplayLabel } from "./wikilinkPaths";
 
 export function applyInlineHighlight(text: HTMLElement, from: number, to: number): void {
   if (to <= from) return;
@@ -102,7 +103,8 @@ export class WikilinkInlineWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const a = document.createElement("a");
     a.href = "#";
-    a.textContent = this.title;
+    a.textContent = wikilinkDisplayLabel(this.title);
+    a.title = this.title;
     a.className = "memo-wikilink text-indigo-700 underline underline-offset-2";
     a.setAttribute("data-link", this.title);
     a.contentEditable = "false";

@@ -38,6 +38,7 @@ class FolderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: Optional[datetime] = None
+    updated_link_note_count: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -125,6 +126,7 @@ class NoteDetail(BaseModel):
     overlay_strokes: List[dict] = []
     revision: int = 1
     change_seq: int = 0
+    updated_link_note_count: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

@@ -8,6 +8,7 @@
     - before_merge: 다른 기기의 변경과 병합하기 직전 (병합이 어색할 때의 복구 수단).
     - restore: 버전을 되돌리기 직전.
     - before_ai_edit: AI 작업 결과를 적용하기 직전.
+    - before_link_update: 노트 이름·위치 변경으로 참조 링크를 자동 갱신하기 직전.
 
 보관: 7일. 스냅샷을 만들 때마다 그 노트의 오래된 것을 지운다.
 
@@ -35,6 +36,7 @@ VersionReason = Literal[
     "restore",
     "periodic_autosave",
     "before_merge",
+    "before_link_update",
 ]
 
 

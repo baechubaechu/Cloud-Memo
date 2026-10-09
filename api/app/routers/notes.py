@@ -39,7 +39,7 @@ from app.services.storage import resolve_storage_path
 from app.services.note_names import choose_note_title, lock_note_names
 from app.services.sync import add_tombstone, merge_text, touch_note
 from app.services.versions import maybe_snapshot_before_update
-from app.services.wikilinks import FolderRef, LinkIndex, NoteRef
+from app.services.wikilinks import FolderRef, LinkIndex, NoteRef, encode_part, folder_path, rewrite_links
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
@@ -257,6 +257,17 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
         )
 
     title_changed = "title" in data and data["title"] is not None and data["title"] != n.title
+    path_changed = title_changed or next_folder != n.folder_id
+    old_folder = n.folder_id
+    link_notes = []
+    link_folders = []
+    old_link_index = None
+    if path_changed:
+        link_notes = list(db.scalars(select(Note).where(Note.user_id == me.id, Note.deleted_at.is_(None))))
+        link_folders = [FolderRef(f.id, f.name, f.parent_id) for f in db.scalars(
+            select(Folder).where(Folder.user_id == me.id, Folder.deleted_at.is_(None))
+        )]
+        old_link_index = LinkIndex([NoteRef(x.id, x.title, x.folder_id) for x in link_notes], link_folders)
     content_changed = "content" in data and data["content"] is not None and data["content"] != n.content
     if merged and content_changed:
         # 병합 결과가 이상할 때 되돌릴 수 있게 병합 직전 상태를 반드시 남긴다.
@@ -289,11 +300,33 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
             raise HTTPException(status_code=413, detail="too many strokes")
         n.overlay_strokes = new_strokes
 
+    updated_link_note_count = None
+    if old_link_index is not None:
+        parent = folder_path(n.folder_id, link_folders)
+        if parent is not None:
+            updated_link_note_count = 0
+            new_path = f"{parent}/{encode_part(n.title)}"
+            for source in link_notes:
+                rewritten = rewrite_links(source.content, old_folder if source.id == n.id else source.folder_id,
+                                          old_link_index, n.id, new_path)
+                if rewritten == source.content:
+                    continue
+                if source.id != n.id:
+                    maybe_snapshot_before_update(db, source, force=True, reason="before_link_update")
+                source.content = rewritten
+                updated_link_note_count += 1
+                if source.id == n.id:
+                    content_changed = True
+                else:
+                    touch_note(db, source, text_changed=True)
+
     touch_note(db, n, text_changed=title_changed or content_changed)
     db.commit()
     n2 = _load_with_relations(db, n.id, me.id)
     assert n2 is not None
-    return _detail(n2)
+    result = _detail(n2)
+    result.updated_link_note_count = updated_link_note_count
+    return result
 
 
 @router.delete("/{note_id}", response_model=NoteDetail)
@@ -418,14 +451,9 @@ def restore_version(
     title = n.title
     if v.title != n.title:
         title = choose_note_title(db, me.id, n.folder_id, v.title, exclude_id=n.id)
+    restored_content = v.content
     maybe_snapshot_before_update(db, n, force=True, reason="restore")
-    n.title = title
-    n.content = v.content
-    touch_note(db, n, text_changed=True)
-    db.commit()
-    n2 = _load_with_relations(db, n.id, me.id)
-    assert n2 is not None
-    return _detail(n2)
+    return update_note(NoteUpdate(title=title, content=restored_content), note_id, db, me)
 
 
 # ---------------- bulk tag assign ----------------

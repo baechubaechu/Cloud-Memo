@@ -54,6 +54,12 @@ def merge_text(base: str, theirs: str, mine: str) -> str:
         return mine
     if mine == theirs:
         return mine
+    # Preserve additions at the boundaries even when automatic link rewrites changed
+    # the surrounding text too much for a fuzzy patch to find its old context.
+    if base and mine.startswith(base):
+        return theirs + mine[len(base):]
+    if base and mine.endswith(base):
+        return mine[:-len(base)] + theirs
     dmp = diff_match_patch()
     patches = dmp.patch_make(base, mine)
     merged, _applied = dmp.patch_apply(patches, theirs)

@@ -2,6 +2,13 @@ export type LinkNote = { id: string; title: string; folder_id: string | null };
 export type LinkFolder = { id: string; name: string; parent_id: string | null };
 export type LinkCandidate = LinkNote & { path: string };
 
+export function wikilinkDisplayLabel(target: string): string {
+  if (!target.includes("/")) return target;
+  const title = target.slice(target.lastIndexOf("/") + 1);
+  try { return decodeURIComponent(title); }
+  catch { return title; }
+}
+
 function encodePart(value: string): string {
   return value.trim().replace(/[/%\[\]|\n\r]/g, (char) => encodeURIComponent(char));
 }

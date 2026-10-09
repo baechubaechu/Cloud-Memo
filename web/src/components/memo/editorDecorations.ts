@@ -2,6 +2,7 @@ import { StateField, type Range } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView } from "@codemirror/view";
 import {
   headingLevelClass,
+  isWikilinkEditPosition,
   parseAttachmentLine,
   parseChecklistLine,
   parseQuoteLine,
@@ -69,7 +70,7 @@ function buildHybridDecorations(state: EditorView["state"]): DecorationSet {
       for (const link of parseWikilinks(line.text)) {
         const linkFrom = line.from + link.from;
         const linkTo = line.from + link.to;
-        const cursorInside = selMain.empty && selMain.head >= linkFrom && selMain.head <= linkTo;
+        const cursorInside = selMain.empty && isWikilinkEditPosition(line.text, link, selMain.head - line.from);
         const selectionOverlaps = hasRangeSelection && selTo > linkFrom && selFrom < linkTo;
         if (cursorInside || selectionOverlaps) continue;
         markDecos.push(

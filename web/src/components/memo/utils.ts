@@ -7,6 +7,7 @@ export const REASON_LABEL: Record<NoteVersion["reason"], string> = {
   restore: "복원 직전",
   periodic_autosave: "자동 스냅샷",
   before_merge: "동기화 병합 직전",
+  before_link_update: "링크 자동 갱신 직전",
 };
 
 export function formatBytes(n: number): string {
