@@ -37,6 +37,14 @@ assert.ok(rendered.includes('title="/업무/회의록"'));
 assert.ok(rendered.endsWith('>회의록</a>'));
 assert.ok(renderInlineMarkdown("[[/폴더/%3Cimg%3E]]").endsWith('>&lt;img&gt;</a>'));
 assert.ok(renderInlineMarkdown("[[/폴더/A&B]]").endsWith('>A&amp;B</a>'));
+// 링크 제목 안의 굵게·코드 문자는 서식으로 바뀌지 않고, 링크 밖 서식은 그대로 적용된다.
+const marked = renderInlineMarkdown("**굵게** [[a **b** `c`]] `코드`");
+assert.ok(marked.includes('data-link="a **b** `c`"'), marked);
+assert.ok(marked.startsWith("<strong>굵게</strong> "), marked);
+assert.ok(marked.endsWith('<code class="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.9em]">코드</code>'), marked);
+assert.ok(!/<a[^>]*<strong>/.test(marked) && !/<a[^>]*<code/.test(marked), marked);
+assert.ok(renderInlineMarkdown("**[[노트]] 굵게**").startsWith("<strong><a "));
+assert.equal(renderInlineMarkdown("\uE0000\uE001"), "0");
 const editLine = "x [[/폴더/노트]]  y";
 const editLink = parseWikilinks(editLine)[0];
 for (const cursor of [editLink.from - 1, editLink.from, editLink.from + 2, editLink.to, editLink.to + 1]) {

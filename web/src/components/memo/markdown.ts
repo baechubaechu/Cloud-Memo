@@ -109,13 +109,18 @@ function renderAttachmentPlaceholderHtml(m: AttachmentMarker): string {
 }
 
 export function renderInlineMarkdown(s: string): string {
-  let out = s.split(/(\[\[[^\[\]\n]+\]\])/g).map((part) => {
-    const match = part.match(/^\[\[([^\[\]\n]+)\]\]$/);
-    if (!match) return escapeHtml(part);
-    const target = escapeHtml(match[1]);
-    const label = escapeHtml(wikilinkDisplayLabel(match[1]));
-    return `<a class="memo-wikilink text-indigo-700 underline underline-offset-2" href="#" data-link="${target}" title="${target}">${label}</a>`;
-  }).join("");
+  // 위키링크는 자리표시자로 빼 두었다가 마지막에 넣는다. 그대로 두면 아래의 굵게·코드
+  // 변환이 링크 태그의 속성 안까지 들어가 HTML 이 깨지고 엉뚱한 노트로 이동한다.
+  const links: string[] = [];
+  const masked = s.replace(/[\uE000\uE001]/g, "").replace(/\[\[([^\[\]\n]+)\]\]/g, (_m, inner: string) => {
+    const target = escapeHtml(inner);
+    const label = escapeHtml(wikilinkDisplayLabel(inner));
+    links.push(
+      `<a class="memo-wikilink text-indigo-700 underline underline-offset-2" href="#" data-link="${target}" title="${target}">${label}</a>`,
+    );
+    return `\uE000${links.length - 1}\uE001`;
+  });
+  let out = escapeHtml(masked);
   // Markdown link: [text](url)
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
@@ -123,7 +128,7 @@ export function renderInlineMarkdown(s: string): string {
   );
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/`([^`]+)`/g, '<code class="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.9em]">$1</code>');
-  return out;
+  return out.replace(/\uE000(\d+)\uE001/g, (_m, index: string) => links[Number(index)] ?? "");
 }
 
 export type WikilinkRange = {

@@ -46,6 +46,9 @@ from app.services.wikilinks import FolderRef, LinkIndex, NoteRef, encode_part, f
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
+# Note.meta 안에 "아직 링크에 반영하지 않은 이름 변경" 의 원래 이름·위치를 둔다.
+PENDING_LINK_KEY = "pending_link_rename"
+
 Db = Annotated[Session, Depends(get_db)]
 
 
@@ -280,16 +283,50 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
 
     title_changed = "title" in data and data["title"] is not None and data["title"] != n.title
     path_changed = title_changed or next_folder != n.folder_id
-    old_folder = n.folder_id
-    link_notes = []
+
+    # 다른 노트의 링크는 "확정된" 이름 변경에만 고친다. 제목을 타이핑하는 동안의 자동
+    # 저장(update_links=false)은 이름만 바꾸고 바뀌기 전 이름·위치를 기억해 둔다. 다음
+    # 확정 요청(update_links=true, 기본값)이 오면 그 이름에서 최종 이름으로 한 번만 고친다.
+    pending = (n.meta or {}).get(PENDING_LINK_KEY)
+    if path_changed and not body.update_links and pending is None:
+        pending = {"title": n.title, "folder_id": str(n.folder_id) if n.folder_id else None}
+        n.meta = {**(n.meta or {}), PENDING_LINK_KEY: pending}
+    if pending is not None:
+        link_from_title = pending["title"]
+        link_from_folder = uuid_pkg.UUID(pending["folder_id"]) if pending.get("folder_id") else None
+    else:
+        link_from_title = n.title
+        link_from_folder = n.folder_id
+
+    link_sources = []
     link_folders = []
     old_link_index = None
-    if path_changed:
-        link_notes = list(db.scalars(select(Note).where(Note.user_id == me.id, Note.deleted_at.is_(None))))
+    if body.update_links and (path_changed or pending is not None):
+        if pending is not None:
+            n.meta = {k: v for k, v in (n.meta or {}).items() if k != PENDING_LINK_KEY}
         link_folders = [FolderRef(f.id, f.name, f.parent_id) for f in db.scalars(
             select(Folder).where(Folder.user_id == me.id, Folder.deleted_at.is_(None))
         )]
-        old_link_index = LinkIndex([NoteRef(x.id, x.title, x.folder_id) for x in link_notes], link_folders)
+        # 링크 해석에는 모든 노트의 제목·위치가 필요하지만(같은 제목이 여럿이면 고치지
+        # 않는다), 본문은 링크가 있는 노트만 읽는다.
+        refs = db.execute(
+            select(Note.id, Note.title, Note.folder_id).where(Note.user_id == me.id, Note.deleted_at.is_(None))
+        ).all()
+        old_link_index = LinkIndex(
+            [
+                NoteRef(note_id, link_from_title, link_from_folder) if note_id == n.id
+                else NoteRef(note_id, note_title, note_folder)
+                for note_id, note_title, note_folder in refs
+            ],
+            link_folders,
+        )
+        link_sources = list(db.scalars(
+            select(Note).where(
+                Note.user_id == me.id,
+                Note.deleted_at.is_(None),
+                Note.content.contains("[[", autoescape=True),
+            )
+        ))
     content_changed = "content" in data and data["content"] is not None and data["content"] != n.content
     if merged and content_changed:
         # 병합 결과가 이상할 때 되돌릴 수 있게 병합 직전 상태를 반드시 남긴다.
@@ -323,13 +360,14 @@ def update_note(body: NoteUpdate, note_id: Annotated[str, Path()], db: Db, me: C
         n.overlay_strokes = new_strokes
 
     updated_link_note_count = None
-    if old_link_index is not None:
+    # 확정 전에 원래 이름·위치로 되돌아왔으면 고칠 것이 없다 (링크 형식도 그대로 둔다).
+    if old_link_index is not None and (n.title, n.folder_id) != (link_from_title, link_from_folder):
         parent = folder_path(n.folder_id, link_folders)
         if parent is not None:
             updated_link_note_count = 0
             new_path = f"{parent}/{encode_part(n.title)}"
-            for source in link_notes:
-                rewritten = rewrite_links(source.content, old_folder if source.id == n.id else source.folder_id,
+            for source in link_sources:
+                rewritten = rewrite_links(source.content, link_from_folder if source.id == n.id else source.folder_id,
                                           old_link_index, n.id, new_path)
                 if rewritten == source.content:
                     continue

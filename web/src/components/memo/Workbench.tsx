@@ -210,6 +210,8 @@ export function MemoWorkbench({
   const applyingRemoteRef = useRef(false);
   /** 저장 요청을 한 번에 하나씩만 보낸다 (동시에 두 개가 나가면 서로를 병합 대상으로 본다). */
   const flushChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  /** 제목 칸에서 타이핑하는 동안 이름만 저장하고 링크 수정은 미뤄 둔 노트 (확정 대기). */
+  const pendingLinkCommitRef = useRef<string | null>(null);
   /** 직전 저장이 서버에 닿지 못했지만 초안은 기기에 남아 있음 (노트 전환을 막지 않는다). */
   const draftKeptOnDeviceRef = useRef(false);
   /** 서버에 닿지 못했을 때 저장을 다시 시도하는 타이머. */
@@ -553,15 +555,20 @@ export function MemoWorkbench({
   }
 
   const flushDraftForNote = useCallback(
-    (noteId: string, note: NoteDetail): Promise<boolean> => {
+    (noteId: string, note: NoteDetail, opts?: { commit?: boolean }): Promise<boolean> => {
       const run = async (): Promise<boolean> => {
         if (!noteId || note.deleted_at) return true;
         syncDraftFromDom();
         const nextTitle = draftTitleRef.current;
         const nextContent = draftContentRef.current;
+        // 제목 칸에서 타이핑하는 중이면 이름 변경을 아직 확정하지 않는다 (서버가 다른 노트의
+        // 링크를 고치지 않고, 중복 이름도 자동으로 바꾸지 않는다). 칸을 벗어나거나 노트를
+        // 전환할 때 확정한다.
+        const commit = !!opts?.commit || document.activeElement !== titleInputRef.current;
+        const linkCommitPending = commit && pendingLinkCommitRef.current === noteId;
         const sameTitle = nextTitle === lastSentRef.current.title;
         const sameBody = nextContent === lastSentRef.current.content;
-        if (sameTitle && sameBody) return true;
+        if (sameTitle && sameBody && !linkCommitPending) return true;
 
         draftKeptOnDeviceRef.current = false;
         const base = baseRef.current;
@@ -581,14 +588,34 @@ export function MemoWorkbench({
           setSaveState("saving");
           // 태그·폴더는 각자의 핸들러가 저장한다. 여기서 같이 보내면 타이머를 건
           // 시점의 옛 값으로 방금 바꾼 태그/폴더를 되돌려 버린다.
-          const updated = await patchNote(token, noteId, {
-            title: nextTitle,
-            resolve_title_conflict: document.activeElement !== titleInputRef.current,
+          const request = {
             content: nextContent,
+            update_links: commit,
             base_revision: base.revision,
             base_title: base.title,
             base_content: base.content,
-          });
+          };
+          // sentTitle: 실제로 서버에 보낸 제목. 이름 중복(409)으로 거절되면 제목은 빼고
+          // 본문만 다시 보낸다 — 제목 문제로 본문까지 저장되지 않는 일이 없게.
+          let sentTitle: string | null = nextTitle;
+          let updated: NoteDetail;
+          try {
+            updated = await patchNote(token, noteId, {
+              ...request,
+              title: nextTitle,
+              resolve_title_conflict: commit,
+            });
+          } catch (e) {
+            if (!(e instanceof ApiError) || e.status !== 409) throw e;
+            setTitleWarning(e.message);
+            sentTitle = null;
+            updated = await patchNote(token, noteId, request);
+          }
+          if (commit) {
+            if (pendingLinkCommitRef.current === noteId) pendingLinkCommitRef.current = null;
+          } else if (sentTitle !== null && sentTitle.trim() !== base.title.trim()) {
+            pendingLinkCommitRef.current = noteId;
+          }
           void reloadNotes();
           void offlineStore.putNote(updated).then(() => setCacheTick((t) => t + 1));
           // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
@@ -597,7 +624,7 @@ export function MemoWorkbench({
             return true;
           }
 
-          const merged = updated.content !== nextContent || updated.title !== nextTitle;
+          const merged = updated.content !== nextContent || (sentTitle !== null && updated.title !== sentTitle);
           if (
             nextTitle.trim() && updated.title !== nextTitle.trim() &&
             /^무제 노트(?: \d+)?$/.test(updated.title)
@@ -608,9 +635,13 @@ export function MemoWorkbench({
             draftTitleRef.current === nextTitle && draftContentRef.current === nextContent;
           if (!merged) {
             // 보낸 그대로 저장됨. (응답으로 화면을 덮어쓰지는 않는다 — 요청~응답
-            // 사이에 입력한 글자가 되돌려지기 때문.)
-            lastSentRef.current = { ...lastSentRef.current, title: nextTitle, content: nextContent };
-            baseRef.current = { revision: updated.revision, title: nextTitle, content: nextContent };
+            // 사이에 입력한 글자가 되돌려지기 때문.) 제목이 거절됐으면 제목은 아직 미저장.
+            lastSentRef.current = {
+              ...lastSentRef.current,
+              title: sentTitle ?? lastSentRef.current.title,
+              content: nextContent,
+            };
+            baseRef.current = { revision: updated.revision, title: sentTitle ?? updated.title, content: nextContent };
           } else if (stillClean) {
             // 다른 기기의 변경과 병합됨 + 그 사이 추가 입력 없음 → 병합 결과를 화면에 반영.
             replaceEditorDoc(updated.content);
@@ -622,8 +653,12 @@ export function MemoWorkbench({
             // 병합됐는데 그 사이 더 입력함 → 화면은 그대로 두고 기준점을 "방금 보낸 것"
             // 으로 둔다. revision 은 일부러 낡은 값을 유지해서, 다음 저장 때 서버가
             // (방금 보낸 것 → 지금 화면) 변경분만 병합 결과 위에 얹게 한다.
-            lastSentRef.current = { ...lastSentRef.current, title: nextTitle, content: nextContent };
-            baseRef.current = { revision: base.revision, title: nextTitle, content: nextContent };
+            lastSentRef.current = {
+              ...lastSentRef.current,
+              title: sentTitle ?? lastSentRef.current.title,
+              content: nextContent,
+            };
+            baseRef.current = { revision: base.revision, title: sentTitle ?? base.title, content: nextContent };
           }
           setActiveNote(updated);
           const allSaved =
@@ -637,8 +672,7 @@ export function MemoWorkbench({
           return true;
         } catch (e) {
           if (e instanceof ApiError) {
-            if (e.status === 409) setTitleWarning(e.message);
-            else handleApiError(e);
+            handleApiError(e);
             setSaveState("dirty");
             return false;
           }
@@ -774,7 +808,7 @@ export function MemoWorkbench({
         const prevId = activeNoteIdRef.current;
         const prevNote = activeNoteRef.current;
         if (prevId && prevNote && !prevNote.deleted_at) {
-          const saved = await flushDraftForNote(prevId, prevNote);
+          const saved = await flushDraftForNote(prevId, prevNote, { commit: true });
           // 서버에 닿지 못했어도 초안이 기기에 남아 있으면 전환을 막지 않는다.
           if (!saved && !draftKeptOnDeviceRef.current) {
             if (offlineRef.current) {
@@ -1526,7 +1560,7 @@ export function MemoWorkbench({
       setError(null);
       const current = activeNoteRef.current;
       if (current && !current.deleted_at) {
-        if (!(await flushDraftForNote(current.id, current)) || !(await flushOverlayForNote(current.id))) return false;
+        if (!(await flushDraftForNote(current.id, current, { commit: true })) || !(await flushOverlayForNote(current.id))) return false;
       }
       const draft = await api.createNote(token, { template_id: template.id, folder_id: template.target_folder_id, template_timezone_offset: new Date().getTimezoneOffset() });
       await activateFreshDraft(draft);
@@ -1583,7 +1617,7 @@ export function MemoWorkbench({
     const prevId = activeNoteIdRef.current;
     const prevNote = activeNoteRef.current;
     if (prevId && prevId !== draft.id && prevNote && !prevNote.deleted_at) {
-      const saved = await flushDraftForNote(prevId, prevNote);
+      const saved = await flushDraftForNote(prevId, prevNote, { commit: true });
       if (!saved) return;
       if (!(await flushOverlayForNote(prevId))) return;
     }

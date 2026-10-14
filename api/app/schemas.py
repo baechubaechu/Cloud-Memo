@@ -85,6 +85,9 @@ class NoteUpdate(BaseModel):
     title: Optional[str] = None
     # 제목 편집 확정 시 중복이면 사용 가능한 무제 노트 이름으로 저장한다.
     resolve_title_conflict: bool = False
+    # 이름·위치 변경을 확정하고 다른 노트의 링크를 고칠지. 제목 칸에서 타이핑하는 동안의
+    # 자동 저장은 false 로 보내 중간 제목이 링크에 들어가지 않게 한다 (확정 때 한 번만 고침).
+    update_links: bool = True
     content: Optional[str] = None
     folder_id: Optional[uuid.UUID] = None
     tag_ids: Optional[List[uuid.UUID]] = None

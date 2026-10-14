@@ -287,6 +287,7 @@ async function patchNote(
   body: Partial<{
     title: string;
     resolve_title_conflict: boolean;
+    update_links: boolean;
     content: string;
     folder_id: string | null;
     tag_ids: string[];
