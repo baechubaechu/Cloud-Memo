@@ -57,7 +57,7 @@ import type {
   ListMode,
   TodoPanelItem,
 } from "./workbenchTypes";
-import { overlaySignature, todayNoteTitle, extractTodoItems } from "./workbenchHelpers";
+import { overlaySignature, todayNoteTitle, extractTodoItems, buildOfflineNoteList } from "./workbenchHelpers";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
@@ -318,38 +318,9 @@ export function MemoWorkbench({
       }
       // 오프라인: 기기에 내려받은 사본으로 같은 목록을 만든다.
       setOffline(true);
-      const q = debouncedQuery.trim().toLowerCase();
-      const useTreeMode = mode === "active" && !selectedTagId;
       const cached = await offlineStore.listNotes();
       setLinkNotes(cached.filter((note) => !note.deleted_at));
-      setNotes(
-        cached
-          .filter((n) => !n.deleted_at)
-          .filter((n) => (mode === "archive" ? n.is_archived : !n.is_archived))
-          .filter((n) => mode !== "favorite" || n.is_favorite)
-          .filter((n) => !selectedTagId || n.tags.some((t) => t.id === selectedTagId))
-          .filter((n) => q || useTreeMode || !selectedFolderId || n.folder_id === selectedFolderId)
-          .filter(
-            (n) =>
-              !q ||
-              n.title.toLowerCase().includes(q) ||
-              n.content.toLowerCase().includes(q) ||
-              n.tags.some((t) => `#${t.name.toLowerCase()}`.includes(q)),
-          )
-          .map((n) => ({
-            id: n.id,
-            title: n.title,
-            folder_id: n.folder_id,
-            is_favorite: n.is_favorite,
-            is_archived: n.is_archived,
-            created_at: n.created_at,
-            updated_at: n.updated_at,
-            deleted_at: n.deleted_at,
-            tags: n.tags,
-            revision: n.revision,
-            change_seq: n.change_seq,
-          })),
-      );
+      setNotes(buildOfflineNoteList(cached, { mode, query: debouncedQuery, selectedTagId, selectedFolderId }));
     }
   }, [debouncedQuery, handleApiError, mode, selectedFolderId, selectedTagId, setOffline, token]);
 
