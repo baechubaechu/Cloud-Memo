@@ -42,14 +42,12 @@ import type {
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
 import { type OverlayDrawingLayerHandle, type OverlayDrawingTool } from "./OverlayDrawingLayer";
-import { parseChecklistLine } from "./markdown";
 import type {
   ConfirmDialogState,
   HoverMeta,
   ListMode,
-  TodoPanelItem,
 } from "./workbenchTypes";
-import { todayNoteTitle, extractTodoItems, buildOfflineNoteList } from "./workbenchHelpers";
+import { todayNoteTitle, buildOfflineNoteList } from "./workbenchHelpers";
 import { CommandPalette } from "./CommandPalette";
 import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
@@ -67,6 +65,7 @@ import { useAutosave } from "./useAutosave";
 import { useSidebarTree } from "./useSidebarTree";
 import { useEditorSession } from "./useEditorSession";
 import { useNoteLoader } from "./useNoteLoader";
+import { useTodoPanel } from "./useTodoPanel";
 import { useStableHandlers } from "./useStableHandlers";
 import { templateShortcut, shortcutLabel } from "./templateShortcuts";
 import { renderTemplate } from "./templateVariables";
@@ -164,8 +163,6 @@ export function MemoWorkbench({
   const [rightPanel, setRightPanel] = useState<"files" | "versions" | "todos" | "backlinks" | null>(null);
   // 기기 사본이 바뀔 때마다 +1. 사본에서 계산하는 패널(백링크)이 다시 계산하는 신호.
   const [cacheTick, setCacheTick] = useState(0);
-  const [todoItems, setTodoItems] = useState<TodoPanelItem[]>([]);
-  const [todoLoading, setTodoLoading] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
   const confirmResolverRef = useRef<((ok: boolean) => void) | null>(null);
   // HoverMeta 타입은 ./workbenchTypes 로 이동.
@@ -515,91 +512,17 @@ export function MemoWorkbench({
     };
   }, []);
 
-  const refreshTodoItems = useCallback(async () => {
-    if (!token) return;
-    setTodoLoading(true);
-    try {
-      const rows = await api.listNotes(token, { archived: false, trash: false });
-      const details = await Promise.all(rows.map((n) => api.getNote(token, n.id)));
-      const items = details.flatMap((note) => {
-        const sourceContent = activeNoteId === note.id ? content : note.content;
-        const sourceTitle = activeNoteId === note.id ? draftTitleRef.current : note.title;
-        return extractTodoItems({ id: note.id, title: sourceTitle }, sourceContent);
-      });
-      setTodoItems(items);
-    } catch (e) {
-      handleApiError(e);
-    } finally {
-      setTodoLoading(false);
-    }
-  }, [activeNoteId, content, handleApiError, token]);
-
-  useEffect(() => {
-    if (rightPanel !== "todos") return;
-    void refreshTodoItems();
-    // 우측 패널을 "할 일"로 열 때 전체 노트를 한 번 훑는다. content 변경마다
-    // 전체 노트를 다시 가져오면 입력 중 과도한 API 호출이 생기므로 수동
-    // 새로고침과 패널 내 토글로 갱신한다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rightPanel]);
-
-  const toggleTodoFromPanel = useCallback(
-    async (item: TodoPanelItem) => {
-      try {
-        const isActive = activeNoteId === item.noteId && !!activeNote;
-        const note = isActive ? activeNote : await api.getNote(token, item.noteId);
-        const sourceContent = isActive ? content : note.content;
-        const lines = sourceContent.split("\n");
-        const rawLine = lines[item.lineIndex] ?? "";
-        const parsed = parseChecklistLine(rawLine);
-        if (!parsed) {
-          await refreshTodoItems();
-          return;
-        }
-        const nextChar = parsed.checked ? " " : "x";
-        lines[item.lineIndex] =
-          rawLine.slice(0, parsed.stateOffset) + nextChar + rawLine.slice(parsed.stateOffset + 1);
-        const nextContent = lines.join("\n");
-        const nextTitle = isActive ? draftTitleRef.current : note.title;
-        const base = isActive
-          ? baseRef.current
-          : { revision: note.revision, title: note.title, content: note.content };
-        const updated = await patchNote(token, item.noteId, {
-          content: nextContent,
-          title: nextTitle,
-          base_revision: base.revision,
-          base_title: base.title,
-          base_content: base.content,
-        });
-        if (isActive) {
-          // 서버가 다른 기기의 변경과 병합했을 수 있으므로 응답 본문을 기준으로 맞춘다.
-          replaceEditorDoc(updated.content);
-          setActiveNote(updated);
-          lastSentRef.current = {
-            ...lastSentRef.current,
-            title: nextTitle,
-            content: updated.content,
-          };
-          baseRef.current = { revision: updated.revision, title: nextTitle, content: updated.content };
-          setSaveState("saved");
-        }
-        setTodoItems((prev) =>
-          prev.map((x) =>
-            x.id === item.id
-              ? {
-                  ...x,
-                  checked: !parsed.checked,
-                }
-              : x,
-          ),
-        );
-        void reloadNotes();
-      } catch (e) {
-        handleApiError(e);
-      }
-    },
-    [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, token],
-  );
+  // ---------- 할 일 패널 ----------
+  const { todoItems, todoLoading, refreshTodoItems, toggleTodoFromPanel } = useTodoPanel({
+    token,
+    session,
+    rightPanel,
+    patchNote,
+    lastSentRef,
+    baseRef,
+    reloadNotes,
+    handleApiError,
+  });
 
   // 버전 목록은 버전 패널이 열려 있을 때만 받는다. 저장·복원으로 revision 이 바뀌면 다시 받는다.
   useEffect(() => {
