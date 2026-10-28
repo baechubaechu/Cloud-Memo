@@ -1,15 +1,15 @@
 // 자동 저장: 제목·본문 디바운스 저장, 서버 병합 기준점(baseRef·lastSentRef), 서버에 닿지
 // 못했을 때 기기 초안 보관과 재시도, 밀린 초안 올리기, 그림 레이어 저장. Workbench 에서 분리.
 //
-// 편집 중인 초안(draftTitleRef·draftContentRef)과 에디터는 Workbench 가 들고 있고, 여기서는
-// ref 로 받아 읽는다. 저장 기준점 ref 들은 노트 열기·동기화도 고치므로 그대로 돌려준다.
+// 편집 중인 초안(draftTitleRef·draftContentRef)과 에디터는 session(./useEditorSession)이 들고
+// 있고, 여기서는 ref 로 받아 읽는다. 저장 기준점 ref 들은 노트 열기·동기화도 고치므로 그대로 돌려준다.
 
-import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
-import type { NoteDetail, OverlayStroke } from "@/lib/api";
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import type { NoteDetail } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
-import type { SaveState } from "./WorkbenchEditor";
 import { overlaySignature } from "./workbenchHelpers";
+import type { EditorSession } from "./useEditorSession";
 
 type Options = {
   token: string;
@@ -24,20 +24,8 @@ type Options = {
   setError: Dispatch<SetStateAction<string | null>>;
   setTitleWarning: Dispatch<SetStateAction<string | null>>;
   setCacheTick: Dispatch<SetStateAction<number>>;
-  setSaveState: Dispatch<SetStateAction<SaveState>>;
-  activeNoteId: string | undefined;
-  activeNote: NoteDetail | undefined;
-  activeNoteIdRef: MutableRefObject<string | undefined>;
-  setActiveNote: Dispatch<SetStateAction<NoteDetail | undefined>>;
-  /** 제목 칸에 포커스가 있는 동안은 이름 변경(링크 갱신)을 확정하지 않는다. */
-  titleInputRef: RefObject<HTMLInputElement | null>;
-  draftTitleRef: MutableRefObject<string>;
-  draftContentRef: MutableRefObject<string>;
-  setTitle: Dispatch<SetStateAction<string>>;
-  syncDraftFromDom: () => void;
-  replaceEditorDoc: (next: string) => void;
-  overlayStrokes: OverlayStroke[];
-  overlayStrokesRef: MutableRefObject<OverlayStroke[]>;
+  /** 열린 노트의 편집 상태. 제목 칸(titleInputRef)에 포커스가 있는 동안은 이름 변경(링크 갱신)을 확정하지 않는다. */
+  session: EditorSession;
 };
 
 export function useAutosave(options: Options) {
@@ -52,6 +40,9 @@ export function useAutosave(options: Options) {
     setError,
     setTitleWarning,
     setCacheTick,
+    session,
+  } = options;
+  const {
     setSaveState,
     activeNoteId,
     activeNote,
@@ -65,7 +56,7 @@ export function useAutosave(options: Options) {
     replaceEditorDoc,
     overlayStrokes,
     overlayStrokesRef,
-  } = options;
+  } = session;
 
   const saveTimerRef = useRef<number | null>(null);
   const lastSentRef = useRef<{ title: string; content: string; overlayKey: string }>({

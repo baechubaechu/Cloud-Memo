@@ -2,12 +2,13 @@
 // 우클릭 메뉴, 끌어다 놓기(DnD), 노트 다중 선택과 Delete 키 삭제. Workbench 에서 분리.
 // 표시는 ./WorkbenchSidebar 가 하고, 이 훅은 상태와 핸들러만 들고 있다.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { Folder, NoteListItem } from "@/lib/api";
 import { api } from "@/lib/api";
 import type { ContextMenuTarget, DragItem, SelectionAnchor } from "./workbenchTypes";
 import { DND_MIME_FOLDER, DND_MIME_NOTE, DND_MIME_NOTE_MULTI, compareName } from "./utils";
 import { useStableHandlers } from "./useStableHandlers";
+import type { EditorSession } from "./useEditorSession";
 
 const NO_FOLDERS: Folder[] = [];
 const NO_NOTES: NoteListItem[] = [];
@@ -40,12 +41,10 @@ type Options = {
   handleApiError: (e: unknown) => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setTitleWarning: Dispatch<SetStateAction<string | null>>;
-  activeNoteId: string | undefined;
+  /** 열린 노트의 이름을 사이드바에서 바꾸면 제목 칸도 맞춘다. */
+  session: EditorSession;
   /** 열린 노트를 닫는다 (지운 노트가 열려 있을 때). */
   closeActiveNote: () => void;
-  /** 열린 노트의 이름을 사이드바에서 바꾸면 제목 칸도 맞춘다. */
-  draftTitleRef: MutableRefObject<string>;
-  setTitle: Dispatch<SetStateAction<string>>;
   selectedFolderId: string | undefined;
   setSelectedFolderId: Dispatch<SetStateAction<string | undefined>>;
   /** 다른 대화상자가 떠 있으면 Delete 키 삭제를 멈춘다. */
@@ -67,14 +66,13 @@ export function useSidebarTree(options: Options) {
     handleApiError,
     setError,
     setTitleWarning,
-    activeNoteId,
+    session,
     closeActiveNote,
-    draftTitleRef,
-    setTitle,
     selectedFolderId,
     setSelectedFolderId,
     suspended,
   } = options;
+  const { activeNoteId, draftTitleRef, setTitle } = session;
 
   // 옵시디언풍 폴더 트리: 어떤 폴더가 펼쳐져 있는지
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());

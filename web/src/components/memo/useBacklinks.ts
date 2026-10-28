@@ -3,13 +3,14 @@
 // Workbench 에서 분리.
 
 import { useCallback, useEffect, useState, type MutableRefObject } from "react";
-import type { Folder, NoteDetail } from "@/lib/api";
+import type { Folder } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
 import { parseWikilinks } from "./markdown";
 import type { RightPanelKind } from "./WorkbenchRightPanel";
 import type { BacklinkItem } from "./workbenchTypes";
 import { buildLinkCandidates, resolveLink, type LinkCandidate } from "./wikilinkPaths";
+import type { EditorSession } from "./useEditorSession";
 
 type Options = {
   token: string;
@@ -18,18 +19,16 @@ type Options = {
   linkCandidatesRef: MutableRefObject<LinkCandidate[]>;
   /** 백링크 패널이 열려 있을 때만 찾는다. */
   rightPanel: RightPanelKind | null;
-  /** 노트가 바뀌거나 제목이 바뀌면 다시 찾는다. */
-  activeNote: NoteDetail | undefined;
-  activeNoteRef: MutableRefObject<NoteDetail | undefined>;
-  /** 깨진 링크는 아직 저장 전인 지금 본문에서 찾는다. */
-  draftContentRef: MutableRefObject<string>;
+  /** 노트·제목이 바뀌면 다시 찾고, 깨진 링크는 아직 저장 전인 지금 본문(draftContentRef)에서 찾는다. */
+  session: EditorSession;
   /** 기기 사본이 바뀔 때마다 +1. 사본에서 계산할 때 다시 찾는 신호. */
   cacheTick: number;
   handleApiError: (e: unknown) => void;
 };
 
 export function useBacklinks(options: Options) {
-  const { token, folders, linkCandidatesRef, rightPanel, activeNote, activeNoteRef, draftContentRef, cacheTick, handleApiError } = options;
+  const { token, folders, linkCandidatesRef, rightPanel, session, cacheTick, handleApiError } = options;
+  const { activeNote, activeNoteRef, draftContentRef } = session;
   const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
   const [brokenLinks, setBrokenLinks] = useState<string[]>([]);
   const [backlinksLoading, setBacklinksLoading] = useState(false);

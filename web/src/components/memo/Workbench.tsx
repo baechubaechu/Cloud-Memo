@@ -3,7 +3,6 @@
 import { useRouter } from "next/navigation";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { IconArchive, IconFile, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
 import {
@@ -41,7 +40,6 @@ import type {
   NoteDetail,
   NoteListItem,
   NoteVersion,
-  OverlayStroke,
   StorageUsage,
   Tag,
   NoteTemplate,
@@ -72,6 +70,7 @@ import { useBacklinks } from "./useBacklinks";
 import { useNoteSync } from "./useNoteSync";
 import { useAutosave } from "./useAutosave";
 import { useSidebarTree } from "./useSidebarTree";
+import { useEditorSession } from "./useEditorSession";
 import { useStableHandlers } from "./useStableHandlers";
 import { templateShortcut, shortcutLabel } from "./templateShortcuts";
 import { renderTemplate } from "./templateVariables";
@@ -134,14 +133,34 @@ export function MemoWorkbench({
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
 
-  const [activeNoteId, setActiveNoteId] = useState<string | undefined>(undefined);
-  const [activeNote, setActiveNote] = useState<NoteDetail | undefined>(undefined);
+  // 지금 열린 노트의 편집 상태 (./useEditorSession) — 아래 훅들에 session 으로 함께 넘긴다.
+  const session = useEditorSession();
+  const {
+    activeNoteId,
+    setActiveNoteId,
+    activeNote,
+    setActiveNote,
+    activeNoteIdRef,
+    activeNoteRef,
+    title,
+    setTitle,
+    content,
+    setContent,
+    saveState,
+    setSaveState,
+    draftTitleRef,
+    draftContentRef,
+    overlayStrokes,
+    setOverlayStrokes,
+    overlayStrokesRef,
+    titleInputRef,
+    editorViewRef,
+    composingRef,
+    applyingRemoteRef,
+    replaceEditorDoc,
+  } = session;
   useEffect(() => setTitleWarning(null), [activeNoteId]);
   const [versions, setVersions] = useState<NoteVersion[]>([]);
-
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [saveState, setSaveState] = useState<"saved" | "saving" | "dirty" | "offline">("saved");
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
@@ -157,27 +176,14 @@ export function MemoWorkbench({
   const [hoverMeta, setHoverMeta] = useState<HoverMeta | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  // 에디터 제목 input ref — 새 노트 직후 포커스
-  const titleInputRef = useRef<HTMLInputElement>(null);
   /** create 직후 해당 노트가 마운트되면 제목으로 포커스 (useLayoutEffect에서 소비) */
   const pendingFocusNewNoteRef = useRef<string | null>(null);
 
-  /** 원격 변경을 에디터에 넣는 중 — 이때의 onChange 는 사용자 입력이 아니므로 저장을 예약하지 않는다. */
-  const applyingRemoteRef = useRef(false);
-  /** setState 직후 디바운스된 flushAutosave 가 옛 title/content 클로저를 읽는 것을 막기 위한 동기 초안 */
-  const draftTitleRef = useRef("");
-  const draftContentRef = useRef("");
-  // 본문 위 자유 그림 레이어 상태. activeNote.overlay_strokes 와 양방향 동기.
-  const [overlayStrokes, setOverlayStrokes] = useState<OverlayStroke[]>([]);
-  const overlayStrokesRef = useRef(overlayStrokes);
-  overlayStrokesRef.current = overlayStrokes;
   const [drawingMode, setDrawingMode] = useState(false);
   const [drawingTool, setDrawingTool] = useState<OverlayDrawingTool>("pen");
   const [drawingColor, setDrawingColor] = useState("#1f2937");
   const [drawingWidth, setDrawingWidth] = useState(2.5);
   const overlayHandleRef = useRef<OverlayDrawingLayerHandle | null>(null);
-  // CodeMirror EditorView — onCreateEditor 에서 채워짐. 첨부 마커 삽입에 사용.
-  const editorViewRef = useRef<EditorView | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -188,14 +194,6 @@ export function MemoWorkbench({
   // 위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장이
   // 직접 들고 있다. 메뉴 상태 / 키보드 선택 / DOM 좌표 추적 모두 CodeMirror 가
   // 관리하므로 React state 는 두지 않는다.
-  // True while a Korean/Japanese/Chinese IME is composing a character.
-  // We must not run the autosave debounce timer during composition,
-  // otherwise React re-renders mid-composition and the in-progress jamo
-  // (e.g. the last 한글 character) gets dropped.
-  const composingRef = useRef(false);
-  /** loadNote 가 오래된 closure 를 쓰지 않도록 — 노트 전환 직전 flush 에 최신 id/detail 필요 */
-  const activeNoteIdRef = useRef<string | undefined>(undefined);
-  const activeNoteRef = useRef<NoteDetail | undefined>(undefined);
 
   const handleApiError = useCallback(
     (e: unknown) => {
@@ -394,56 +392,6 @@ export function MemoWorkbench({
     notesRef.current = notes;
   }, [notes]);
 
-  useEffect(() => {
-    activeNoteIdRef.current = activeNoteId;
-  }, [activeNoteId]);
-  useEffect(() => {
-    activeNoteRef.current = activeNote;
-  }, [activeNote]);
-
-  /** 제목 input·CodeMirror 에만 있고 아직 ref/state 에 안 올라온 글자까지 플러시에 포함 */
-  function syncDraftFromDom(): void {
-    const titleEl = titleInputRef.current;
-    if (titleEl) draftTitleRef.current = titleEl.value;
-    const view = editorViewRef.current;
-    if (view) draftContentRef.current = view.state.doc.toString();
-  }
-
-  /**
-   * 에디터 본문을 `next` 로 바꾼다. 앞뒤 공통 부분은 건드리지 않고 달라진 가운데만
-   * 교체해서 캐럿·스크롤이 유지되게 하고, undo 히스토리에는 넣지 않는다
-   * (Ctrl+Z 가 다른 기기의 수정을 되돌리면 안 된다).
-   */
-  function replaceEditorDoc(next: string): void {
-    draftContentRef.current = next;
-    const view = editorViewRef.current;
-    if (view) {
-      const cur = view.state.doc.toString();
-      if (cur !== next) {
-        const max = Math.min(cur.length, next.length);
-        let start = 0;
-        while (start < max && cur.charCodeAt(start) === next.charCodeAt(start)) start += 1;
-        let end = 0;
-        while (
-          end < max - start &&
-          cur.charCodeAt(cur.length - 1 - end) === next.charCodeAt(next.length - 1 - end)
-        ) {
-          end += 1;
-        }
-        applyingRemoteRef.current = true;
-        try {
-          view.dispatch({
-            changes: { from: start, to: cur.length - end, insert: next.slice(start, next.length - end) },
-            annotations: Transaction.addToHistory.of(false),
-          });
-        } finally {
-          applyingRemoteRef.current = false;
-        }
-      }
-    }
-    setContent(next);
-  }
-
   // ---------- 자동 저장 ----------
   const {
     saveTimerRef,
@@ -467,19 +415,7 @@ export function MemoWorkbench({
     setError,
     setTitleWarning,
     setCacheTick,
-    setSaveState,
-    activeNoteId,
-    activeNote,
-    activeNoteIdRef,
-    setActiveNote,
-    titleInputRef,
-    draftTitleRef,
-    draftContentRef,
-    setTitle,
-    syncDraftFromDom,
-    replaceEditorDoc,
-    overlayStrokes,
-    overlayStrokesRef,
+    session,
   });
 
   /** 열린 노트를 닫는다 (지워졌을 때). 대기 중인 저장도 취소한다 — 지운 노트에 저장하면 404. */
@@ -552,10 +488,8 @@ export function MemoWorkbench({
     handleApiError,
     setError,
     setTitleWarning,
-    activeNoteId,
+    session,
     closeActiveNote,
-    draftTitleRef,
-    setTitle,
     selectedFolderId,
     setSelectedFolderId,
     suspended: !!templateDialog || !!confirmDialog,
@@ -780,9 +714,7 @@ export function MemoWorkbench({
     folders,
     linkCandidatesRef,
     rightPanel,
-    activeNote,
-    activeNoteRef,
-    draftContentRef,
+    session,
     cacheTick,
     handleApiError,
   });
@@ -1360,22 +1292,10 @@ export function MemoWorkbench({
     reloadNotes,
     pushPendingDrafts,
     flushAutosaveRef,
-    activeNoteIdRef,
-    activeNoteRef,
-    setActiveNote,
     closeActiveNote,
-    draftTitleRef,
-    draftContentRef,
-    setTitle,
-    overlayStrokesRef,
-    setOverlayStrokes,
     lastSentRef,
     baseRef,
-    composingRef,
-    editorViewRef,
-    syncDraftFromDom,
-    replaceEditorDoc,
-    setSaveState,
+    session,
   });
 
   /** 편집 영역 아무 곳에나 파일을 떨어뜨렸을 때 — 그 줄 끝에 첨부를 넣는다. */

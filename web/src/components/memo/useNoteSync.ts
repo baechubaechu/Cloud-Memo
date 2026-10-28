@@ -1,16 +1,16 @@
 // 동기화: 다른 기기의 변경을 몇 초 간격으로 가져오고, 기기 사본(오프라인용)을 최신으로
 // 유지하고, 서버에 다시 닿으면 온라인 상태로 되돌린다. Workbench 에서 분리.
 //
-// 활성 노트의 편집 상태(초안·기준점·저장 타이머)는 Workbench 가 들고 있고, 여기서는
-// ref 로 받아 읽고 고친다. 폴링 루프는 한 번만 만들고 처리 함수는 ref 로 최신 것을 읽는다.
+// 열린 노트의 편집 상태는 session(./useEditorSession), 저장 기준점은 ./useAutosave 가 들고
+// 있고, 여기서는 ref 로 받아 읽고 고친다. 폴링 루프는 한 번만 만들고 처리 함수는 ref 로
+// 최신 것을 읽는다.
 
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type { EditorView } from "@codemirror/view";
-import type { NoteDetail, NoteListItem, OverlayStroke, SyncChanges } from "@/lib/api";
+import type { NoteDetail, NoteListItem, SyncChanges } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
-import type { SaveState } from "./WorkbenchEditor";
 import { overlaySignature } from "./workbenchHelpers";
+import type { EditorSession } from "./useEditorSession";
 
 type Options = {
   token: string;
@@ -23,23 +23,11 @@ type Options = {
   reloadNotes: () => Promise<void>;
   pushPendingDrafts: () => Promise<void>;
   flushAutosaveRef: MutableRefObject<() => void>;
-  activeNoteIdRef: MutableRefObject<string | undefined>;
-  activeNoteRef: MutableRefObject<NoteDetail | undefined>;
-  setActiveNote: Dispatch<SetStateAction<NoteDetail | undefined>>;
   /** 열린 노트를 닫는다 (대기 중인 저장 취소 포함). */
   closeActiveNote: () => void;
-  draftTitleRef: MutableRefObject<string>;
-  draftContentRef: MutableRefObject<string>;
-  setTitle: Dispatch<SetStateAction<string>>;
-  overlayStrokesRef: MutableRefObject<OverlayStroke[]>;
-  setOverlayStrokes: Dispatch<SetStateAction<OverlayStroke[]>>;
   lastSentRef: MutableRefObject<{ title: string; content: string; overlayKey: string }>;
   baseRef: MutableRefObject<{ revision: number; title: string; content: string }>;
-  composingRef: MutableRefObject<boolean>;
-  editorViewRef: MutableRefObject<EditorView | null>;
-  syncDraftFromDom: () => void;
-  replaceEditorDoc: (next: string) => void;
-  setSaveState: Dispatch<SetStateAction<SaveState>>;
+  session: EditorSession;
 };
 
 export function useNoteSync(options: Options) {
@@ -54,23 +42,26 @@ export function useNoteSync(options: Options) {
     reloadNotes,
     pushPendingDrafts,
     flushAutosaveRef,
+    closeActiveNote,
+    lastSentRef,
+    baseRef,
+    session,
+  } = options;
+  const {
     activeNoteIdRef,
     activeNoteRef,
     setActiveNote,
-    closeActiveNote,
     draftTitleRef,
     draftContentRef,
     setTitle,
     overlayStrokesRef,
     setOverlayStrokes,
-    lastSentRef,
-    baseRef,
     composingRef,
     editorViewRef,
     syncDraftFromDom,
     replaceEditorDoc,
     setSaveState,
-  } = options;
+  } = session;
 
   /** 동기화 폴링 위치. null 이면 아직 첫 응답 전. */
   const syncSeqRef = useRef<number | null>(null);
