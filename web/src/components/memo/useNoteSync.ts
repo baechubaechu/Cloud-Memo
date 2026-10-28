@@ -25,13 +25,12 @@ type Options = {
   flushAutosaveRef: MutableRefObject<() => void>;
   activeNoteIdRef: MutableRefObject<string | undefined>;
   activeNoteRef: MutableRefObject<NoteDetail | undefined>;
-  setActiveNoteId: Dispatch<SetStateAction<string | undefined>>;
   setActiveNote: Dispatch<SetStateAction<NoteDetail | undefined>>;
-  saveTimerRef: MutableRefObject<number | null>;
+  /** 열린 노트를 닫는다 (대기 중인 저장 취소 포함). */
+  closeActiveNote: () => void;
   draftTitleRef: MutableRefObject<string>;
   draftContentRef: MutableRefObject<string>;
   setTitle: Dispatch<SetStateAction<string>>;
-  setContent: Dispatch<SetStateAction<string>>;
   overlayStrokesRef: MutableRefObject<OverlayStroke[]>;
   setOverlayStrokes: Dispatch<SetStateAction<OverlayStroke[]>>;
   lastSentRef: MutableRefObject<{ title: string; content: string; overlayKey: string }>;
@@ -57,13 +56,11 @@ export function useNoteSync(options: Options) {
     flushAutosaveRef,
     activeNoteIdRef,
     activeNoteRef,
-    setActiveNoteId,
     setActiveNote,
-    saveTimerRef,
+    closeActiveNote,
     draftTitleRef,
     draftContentRef,
     setTitle,
-    setContent,
     overlayStrokesRef,
     setOverlayStrokes,
     lastSentRef,
@@ -168,16 +165,7 @@ export function useNoteSync(options: Options) {
     const activeId = activeNoteIdRef.current;
     if (activeId && res.deleted.includes(activeId)) {
       // 다른 기기에서 지운 노트를 보고 있었다 → 닫는다 (저장하면 404 가 된다).
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
-      setActiveNoteId(undefined);
-      setActiveNote(undefined);
-      draftTitleRef.current = "";
-      draftContentRef.current = "";
-      setTitle("");
-      setContent("");
+      closeActiveNote();
     }
     const activeRow = activeId ? res.notes.find((n) => n.id === activeId) : undefined;
     // 내 저장도 seq 를 올리므로, 이미 응답으로 받은 change_seq 와 같으면 내 변경이다.

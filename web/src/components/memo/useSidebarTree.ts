@@ -3,7 +3,7 @@
 // 표시는 ./WorkbenchSidebar 가 하고, 이 훅은 상태와 핸들러만 들고 있다.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import type { Folder, NoteDetail, NoteListItem } from "@/lib/api";
+import type { Folder, NoteListItem } from "@/lib/api";
 import { api } from "@/lib/api";
 import type { ContextMenuTarget, DragItem, SelectionAnchor } from "./workbenchTypes";
 import { DND_MIME_FOLDER, DND_MIME_NOTE, DND_MIME_NOTE_MULTI, compareName } from "./utils";
@@ -41,12 +41,11 @@ type Options = {
   setError: Dispatch<SetStateAction<string | null>>;
   setTitleWarning: Dispatch<SetStateAction<string | null>>;
   activeNoteId: string | undefined;
-  setActiveNoteId: Dispatch<SetStateAction<string | undefined>>;
-  setActiveNote: Dispatch<SetStateAction<NoteDetail | undefined>>;
+  /** 열린 노트를 닫는다 (지운 노트가 열려 있을 때). */
+  closeActiveNote: () => void;
+  /** 열린 노트의 이름을 사이드바에서 바꾸면 제목 칸도 맞춘다. */
   draftTitleRef: MutableRefObject<string>;
-  draftContentRef: MutableRefObject<string>;
   setTitle: Dispatch<SetStateAction<string>>;
-  setContent: Dispatch<SetStateAction<string>>;
   selectedFolderId: string | undefined;
   setSelectedFolderId: Dispatch<SetStateAction<string | undefined>>;
   /** 다른 대화상자가 떠 있으면 Delete 키 삭제를 멈춘다. */
@@ -69,12 +68,9 @@ export function useSidebarTree(options: Options) {
     setError,
     setTitleWarning,
     activeNoteId,
-    setActiveNoteId,
-    setActiveNote,
+    closeActiveNote,
     draftTitleRef,
-    draftContentRef,
     setTitle,
-    setContent,
     selectedFolderId,
     setSelectedFolderId,
     suspended,
@@ -265,10 +261,7 @@ export function useSidebarTree(options: Options) {
       await api.deleteNote(token, noteId);
       await reloadNotes();
       void refreshUsage();
-      if (activeNoteId === noteId) {
-        setActiveNoteId(undefined);
-        setActiveNote(undefined);
-      }
+      if (activeNoteId === noteId) closeActiveNote();
     } catch (e) {
       handleApiError(e);
     }
@@ -378,14 +371,7 @@ export function useSidebarTree(options: Options) {
       await reloadNotes();
       void refreshUsage();
       const removed = new Set(targetNotes.map((n) => n.id));
-      if (activeNoteId && removed.has(activeNoteId)) {
-        setActiveNoteId(undefined);
-        setActiveNote(undefined);
-        draftTitleRef.current = "";
-        draftContentRef.current = "";
-        setTitle("");
-        setContent("");
-      }
+      if (activeNoteId && removed.has(activeNoteId)) closeActiveNote();
       setSelectedNoteIds(new Set());
       selectionAnchorRef.current = null;
     } catch (e) {

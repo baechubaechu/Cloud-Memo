@@ -366,74 +366,6 @@ export function MemoWorkbench({
     activeNoteRef.current = activeNote;
   }, [activeNote]);
 
-  // 편집 중인 제목은 IME 조합 때문에 서버 반영·reloadNotes 가 늦을 수 있다.
-  // 사이드바/모바일 목록은 에디터의 title state 와 동기된 표시를 위해 활성 노트만 병합한다.
-  const notesWithLiveTitle = useMemo(() => {
-    if (!activeNoteId) return notes;
-    return notes.map((n) => (n.id === activeNoteId ? { ...n, title } : n));
-  }, [notes, activeNoteId, title]);
-
-  // ---------- 사이드바 트리 ----------
-  const {
-    expandedFolders,
-    setExpandedFolders,
-    contextMenu,
-    setContextMenu,
-    renaming,
-    setRenaming,
-    creatingFolder,
-    setCreatingFolder,
-    draggedItem,
-    setDraggedItem,
-    draggedItemRef,
-    folderDropHoverId,
-    setFolderDropHoverId,
-    rootDropActive,
-    setRootDropActive,
-    selectedNoteIds,
-    folderOptions,
-    allFoldersExpanded,
-    toggleExpandAllFolders,
-    beginCreateFolder,
-    cancelCreateFolder,
-    commitCreateFolder,
-    toggleFolderExpanded,
-    beginRename,
-    cancelRename,
-    commitRename,
-    handleNoteContextDelete,
-    handleDeleteFolder,
-    childrenOf,
-    notesInFolder,
-    handleSelectNote,
-    canDropIntoFolder,
-    dropOnto,
-  } = useSidebarTree({
-    token,
-    folders,
-    notes,
-    notesWithLiveTitle,
-    patchNote,
-    patchFolder,
-    refreshMeta,
-    reloadNotes,
-    refreshUsage,
-    askConfirm,
-    handleApiError,
-    setError,
-    setTitleWarning,
-    activeNoteId,
-    setActiveNoteId,
-    setActiveNote,
-    draftTitleRef,
-    draftContentRef,
-    setTitle,
-    setContent,
-    selectedFolderId,
-    setSelectedFolderId,
-    suspended: !!templateDialog || !!confirmDialog,
-  });
-
   /** 제목 input·CodeMirror 에만 있고 아직 ref/state 에 안 올라온 글자까지 플러시에 포함 */
   function syncDraftFromDom(): void {
     const titleEl = titleInputRef.current;
@@ -513,6 +445,85 @@ export function MemoWorkbench({
     replaceEditorDoc,
     overlayStrokes,
     overlayStrokesRef,
+  });
+
+  /** 열린 노트를 닫는다 (지워졌을 때). 대기 중인 저장도 취소한다 — 지운 노트에 저장하면 404. */
+  function closeActiveNote(): void {
+    if (saveTimerRef.current) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setActiveNoteId(undefined);
+    setActiveNote(undefined);
+    draftTitleRef.current = "";
+    draftContentRef.current = "";
+    setTitle("");
+    setContent("");
+  }
+
+  // 편집 중인 제목은 IME 조합 때문에 서버 반영·reloadNotes 가 늦을 수 있다.
+  // 사이드바/모바일 목록은 에디터의 title state 와 동기된 표시를 위해 활성 노트만 병합한다.
+  const notesWithLiveTitle = useMemo(() => {
+    if (!activeNoteId) return notes;
+    return notes.map((n) => (n.id === activeNoteId ? { ...n, title } : n));
+  }, [notes, activeNoteId, title]);
+
+  // ---------- 사이드바 트리 ----------
+  const {
+    expandedFolders,
+    setExpandedFolders,
+    contextMenu,
+    setContextMenu,
+    renaming,
+    setRenaming,
+    creatingFolder,
+    setCreatingFolder,
+    draggedItem,
+    setDraggedItem,
+    draggedItemRef,
+    folderDropHoverId,
+    setFolderDropHoverId,
+    rootDropActive,
+    setRootDropActive,
+    selectedNoteIds,
+    folderOptions,
+    allFoldersExpanded,
+    toggleExpandAllFolders,
+    beginCreateFolder,
+    cancelCreateFolder,
+    commitCreateFolder,
+    toggleFolderExpanded,
+    beginRename,
+    cancelRename,
+    commitRename,
+    handleNoteContextDelete,
+    handleDeleteFolder,
+    childrenOf,
+    notesInFolder,
+    handleSelectNote,
+    canDropIntoFolder,
+    dropOnto,
+  } = useSidebarTree({
+    token,
+    folders,
+    notes,
+    notesWithLiveTitle,
+    patchNote,
+    patchFolder,
+    refreshMeta,
+    reloadNotes,
+    refreshUsage,
+    askConfirm,
+    handleApiError,
+    setError,
+    setTitleWarning,
+    activeNoteId,
+    closeActiveNote,
+    draftTitleRef,
+    setTitle,
+    selectedFolderId,
+    setSelectedFolderId,
+    suspended: !!templateDialog || !!confirmDialog,
   });
 
   const loadNote = useCallback(
@@ -1033,14 +1044,7 @@ export function MemoWorkbench({
       await api.deleteNote(token, item.id);
       await reloadNotes();
       void refreshUsage();
-      if (activeNoteId === item.id) {
-        setActiveNoteId(undefined);
-        setActiveNote(undefined);
-        draftTitleRef.current = "";
-        draftContentRef.current = "";
-        setTitle("");
-        setContent("");
-      }
+      if (activeNoteId === item.id) closeActiveNote();
     } catch (e) {
       handleApiError(e);
     }
@@ -1313,13 +1317,11 @@ export function MemoWorkbench({
     flushAutosaveRef,
     activeNoteIdRef,
     activeNoteRef,
-    setActiveNoteId,
     setActiveNote,
-    saveTimerRef,
+    closeActiveNote,
     draftTitleRef,
     draftContentRef,
     setTitle,
-    setContent,
     overlayStrokesRef,
     setOverlayStrokes,
     lastSentRef,
