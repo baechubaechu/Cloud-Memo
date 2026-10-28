@@ -325,6 +325,38 @@ export function MemoWorkbench({
     }
   }, [debouncedQuery, handleApiError, mode, selectedFolderId, selectedTagId, setOffline, token]);
 
+  /**
+   * 저장 응답으로 목록의 그 노트 한 줄만 고친다 (저장마다 목록 전체를 다시 받지 않게).
+   * 검색 중이면 고친 본문이 검색 결과를 바꿀 수 있으니 다시 읽는다.
+   */
+  const refreshListAfterSave = useCallback(
+    (updated: NoteDetail) => {
+      if (debouncedQuery.trim()) {
+        void reloadNotes();
+        return;
+      }
+      setError(null);
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === updated.id
+            ? {
+                ...n,
+                title: updated.title,
+                folder_id: updated.folder_id,
+                updated_at: updated.updated_at,
+                revision: updated.revision,
+                change_seq: updated.change_seq,
+              }
+            : n,
+        ),
+      );
+      setLinkNotes((prev) =>
+        prev.map((n) => (n.id === updated.id ? { ...n, title: updated.title, folder_id: updated.folder_id } : n)),
+      );
+    },
+    [debouncedQuery, reloadNotes],
+  );
+
   useEffect(() => {
     void refreshMeta();
     void refreshUsage();
@@ -427,6 +459,7 @@ export function MemoWorkbench({
     patchNote,
     handleApiError,
     reloadNotes,
+    refreshListAfterSave,
     setOffline,
     setError,
     setTitleWarning,
@@ -436,7 +469,6 @@ export function MemoWorkbench({
     activeNote,
     activeNoteIdRef,
     setActiveNote,
-    setVersions,
     titleInputRef,
     draftTitleRef,
     draftContentRef,
@@ -627,12 +659,6 @@ export function MemoWorkbench({
           baseRef.current = { revision: note.revision, title: note.title, content: note.content };
           setSaveState("saved");
         }
-        try {
-          setVersions(await api.listVersions(token, id));
-        } catch (e) {
-          if (e instanceof ApiError) throw e;
-          setVersions([]);
-        }
       } catch (e) {
         handleApiError(e);
       }
@@ -725,6 +751,25 @@ export function MemoWorkbench({
     },
     [activeNote, activeNoteId, content, handleApiError, refreshTodoItems, reloadNotes, token],
   );
+
+  // 버전 목록은 버전 패널이 열려 있을 때만 받는다. 저장·복원으로 revision 이 바뀌면 다시 받는다.
+  useEffect(() => {
+    if (rightPanel !== "versions" || !activeNoteId) return;
+    let cancelled = false;
+    api
+      .listVersions(token, activeNoteId)
+      .then((rows) => {
+        if (!cancelled) setVersions(rows);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        if (e instanceof ApiError) handleApiError(e);
+        else setVersions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rightPanel, activeNoteId, activeNote?.revision, token, handleApiError]);
 
   // ---------- 백링크 ----------
   const { backlinks, brokenLinks, backlinksLoading, refreshBacklinks } = useBacklinks({
@@ -1024,10 +1069,6 @@ export function MemoWorkbench({
     });
 
     void reloadNotes();
-    api
-      .listVersions(token, draft.id)
-      .then(setVersions)
-      .catch(() => {});
   }
 
   async function handleListItemAction(item: NoteListItem) {

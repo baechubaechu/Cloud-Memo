@@ -5,7 +5,7 @@
 // ref 로 받아 읽는다. 저장 기준점 ref 들은 노트 열기·동기화도 고치므로 그대로 돌려준다.
 
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
-import type { NoteDetail, NoteVersion, OverlayStroke } from "@/lib/api";
+import type { NoteDetail, OverlayStroke } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
 import { offlineStore } from "@/lib/offlineStore";
 import type { SaveState } from "./WorkbenchEditor";
@@ -18,6 +18,8 @@ type Options = {
   patchNote: typeof api.patchNote;
   handleApiError: (e: unknown) => void;
   reloadNotes: () => Promise<void>;
+  /** 저장이 끝난 노트를 목록에 반영한다. */
+  refreshListAfterSave: (updated: NoteDetail) => void;
   setOffline: (next: boolean) => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setTitleWarning: Dispatch<SetStateAction<string | null>>;
@@ -27,7 +29,6 @@ type Options = {
   activeNote: NoteDetail | undefined;
   activeNoteIdRef: MutableRefObject<string | undefined>;
   setActiveNote: Dispatch<SetStateAction<NoteDetail | undefined>>;
-  setVersions: Dispatch<SetStateAction<NoteVersion[]>>;
   /** 제목 칸에 포커스가 있는 동안은 이름 변경(링크 갱신)을 확정하지 않는다. */
   titleInputRef: RefObject<HTMLInputElement | null>;
   draftTitleRef: MutableRefObject<string>;
@@ -46,6 +47,7 @@ export function useAutosave(options: Options) {
     patchNote,
     handleApiError,
     reloadNotes,
+    refreshListAfterSave,
     setOffline,
     setError,
     setTitleWarning,
@@ -55,7 +57,6 @@ export function useAutosave(options: Options) {
     activeNote,
     activeNoteIdRef,
     setActiveNote,
-    setVersions,
     titleInputRef,
     draftTitleRef,
     draftContentRef,
@@ -155,7 +156,7 @@ export function useAutosave(options: Options) {
           } else if (sentTitle !== null && sentTitle.trim() !== base.title.trim()) {
             pendingLinkCommitRef.current = noteId;
           }
-          void reloadNotes();
+          refreshListAfterSave(updated);
           void offlineStore.putNote(updated).then(() => setCacheTick((t) => t + 1));
           // 응답이 오기 전에 다른 노트로 넘어갔으면 화면 상태는 건드리지 않는다.
           if (activeNoteIdRef.current !== noteId) {
@@ -206,8 +207,6 @@ export function useAutosave(options: Options) {
           // 더 입력한 게 남아 있으면 기기 초안은 다음 저장이 덮어쓸 때까지 둔다.
           if (allSaved) await offlineStore.deleteDraft(noteId);
           setSaveState(allSaved ? "saved" : "dirty");
-          const vers = await api.listVersions(token, noteId);
-          if (activeNoteIdRef.current === noteId) setVersions(vers);
           return true;
         } catch (e) {
           if (e instanceof ApiError) {
@@ -235,7 +234,7 @@ export function useAutosave(options: Options) {
       return chained;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [handleApiError, reloadNotes, setOffline, token],
+    [handleApiError, refreshListAfterSave, setOffline, token],
   );
 
   /**
