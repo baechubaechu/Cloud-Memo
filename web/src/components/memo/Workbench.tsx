@@ -15,9 +15,7 @@ import {
   editorNavAndDeleteKeymap,
   editorQuoteEnterKeymap,
   editorUndoRedoKeymap,
-  getLastDocCursor,
   hybridMarkdownField,
-  isLastDocCursorExplicit,
   memoEditorContextExtension,
 } from "./editor";
 import { REASON_LABEL, compareName } from "./utils";
@@ -31,7 +29,6 @@ import {
 } from "react";
 
 import type {
-  Attachment,
   Folder,
   ListNotesQuery,
   NoteDetail,
@@ -61,7 +58,8 @@ import { WorkbenchEditorCard } from "./WorkbenchEditor";
 import { buildAppCommands } from "./workbenchCommands";
 import { wikilinkAutocompleteExtension } from "./wikilinkExtension";
 import { TemplateManager } from "./TemplateManager";
-import { useAudioRecorder } from "./useAudioRecorder";
+import { useAttachments } from "./useAttachments";
+import { insertTextAtCursor } from "./editorInsert";
 import { useSlashMenu } from "./useSlashMenu";
 import { useBacklinks } from "./useBacklinks";
 import { useNoteSync } from "./useNoteSync";
@@ -868,167 +866,28 @@ export function MemoWorkbench({
     }
   }
 
-  async function handleUpload(files: FileList | null) {
-    if (!files?.length || !activeNoteId) return;
-    for (let i = 0; i < files.length; i += 1) {
-      try {
-        await api.uploadAttachment(token, activeNoteId, files.item(i)!);
-      } catch (e) {
-        handleApiError(e);
-      }
-    }
-    if (activeNoteId) await loadNote(activeNoteId);
-    void refreshUsage();
-  }
-
-  // 본문 cursor 위치에 첨부 마커 텍스트를 삽입한다.
-  //
-  // 캐럿 위치 결정 규칙(아래 우선순위):
-  //   1) 본문에 포커스가 살아 있으면 view.state.selection 을 그대로 쓴다.
-  //      (=화면에서 깜빡이는 캐럿)
-  //   2) 본문에서 한 번이라도 사용자가 명시적으로 캐럿을 둔 적이 있으면
-  //      그 마지막 위치(__lastDocCursor) 를 쓴다.
-  //   3) 위 두 조건 다 아니면(예: 새 노트 열자마자 툴바 버튼만 누른 경우)
-  //      문서 끝에 append. 예전엔 이 경우에도 0(=최상단) 으로 박혀버려서
-  //      "이미지 위치가 항상 최상단" 처럼 보였음.
-  function insertMarkerAtCursor(marker: string, at?: number): boolean {
-    const view = editorViewRef.current;
-    if (!view) return false;
-    const doc = view.state.doc;
-    // 우선순위:
-    //  1) 본문 포커스가 살아 있으면 화면에 보이는 캐럿(view.state.selection)이 곧 진실.
-    //  2) 본문에서 명시적으로 캐럿을 둔 적이 있다면 그 마지막 위치.
-    //  3) 사용자가 본문을 한 번도 안 만졌으면 문서 끝(append) — "최상단으로 박히는"
-    //     예전 버그 재발 방지.
-    let chosen: number;
-    if (at !== undefined) {
-      // 호출부가 위치를 정해 준 경우(끌어다 놓기) 그대로 따른다.
-      chosen = at;
-    } else if (view.hasFocus) {
-      chosen = view.state.selection.main.from;
-    } else if (isLastDocCursorExplicit()) {
-      chosen = getLastDocCursor();
-    } else {
-      chosen = doc.length;
-    }
-    chosen = Math.min(Math.max(0, chosen), doc.length);
-    const baseFrom = chosen;
-    const baseTo = chosen;
-    const lineAtFrom = doc.lineAt(baseFrom);
-    const atLineStart = baseFrom === lineAtFrom.from;
-    const lineEmpty = lineAtFrom.text.trim().length === 0;
-    let prefix = "";
-    let suffix = "\n";
-    if (!atLineStart) prefix = "\n";
-    else if (!lineEmpty) prefix = "";
-    const insertText = `${prefix}${marker}${suffix}`;
-    view.dispatch({
-      changes: { from: baseFrom, to: baseTo, insert: insertText },
-      selection: { anchor: baseFrom + insertText.length },
-      scrollIntoView: true,
-    });
-    view.focus();
-    return true;
-  }
-
-  function insertTextAtCursor(insertText: string): boolean {
-    const view = editorViewRef.current;
-    if (!view) return false;
-    const doc = view.state.doc;
-    let chosen: number;
-    if (view.hasFocus) {
-      chosen = view.state.selection.main.from;
-    } else if (isLastDocCursorExplicit()) {
-      chosen = getLastDocCursor();
-    } else {
-      chosen = doc.length;
-    }
-    chosen = Math.min(Math.max(0, chosen), doc.length);
-    view.dispatch({
-      changes: { from: chosen, to: chosen, insert: insertText },
-      selection: { anchor: chosen + insertText.length },
-      scrollIntoView: true,
-    });
-    view.focus();
-    return true;
-  }
+  // ---------- 첨부·녹음 ----------
+  const { handleUpload, uploadAndInsert, handleDeleteAttachment, handleDropFiles, audioRecorder } = useAttachments({
+    token,
+    session,
+    loadNote,
+    refreshUsage,
+    askConfirm,
+    handleApiError,
+    setError,
+  });
 
   function handleTemplateInsert(template: NoteTemplate): boolean {
     const note = activeNoteRef.current;
     const view = editorViewRef.current;
     if (!note || note.deleted_at || !view || composingRef.current || view.composing) return false;
-    const inserted = insertTextAtCursor(renderTemplate(template.content, titleInputRef.current?.value ?? draftTitleRef.current));
+    const inserted = insertTextAtCursor(view, renderTemplate(template.content, titleInputRef.current?.value ?? draftTitleRef.current));
     if (!inserted) return false;
     setTemplateDialog(null);
     window.setTimeout(() => {
       if (activeNoteIdRef.current === note.id && editorViewRef.current === view) view.focus();
     }, 0);
     return true;
-  }
-
-  // (위키링크 자동완성은 ./wikilinkExtension 의 CodeMirror autocomplete 확장에서
-  // 직접 처리한다. 메뉴 / 키보드 / 좌표 / dispatch 모두 CodeMirror 가 소유.)
-
-  function buildAttachmentMarker(att: { id: string; original_filename: string; kind?: string }): string {
-    const safeName = att.original_filename.replaceAll("]", "").replaceAll("[", "");
-    if (att.kind === "image") return `![${safeName}](attachment://${att.id})`;
-    if (att.kind === "audio") return `![audio:${safeName}](attachment://${att.id})`;
-    return `[${safeName}](attachment://${att.id})`;
-  }
-
-  // 툴바에서 부르는 업로드: 업로드 즉시 본문에 마커 자동 삽입.
-  // 주의: loadNote 를 부르면 setContent 로 서버의 (마커 없는) 옛 본문이
-  // 화면을 덮어써서 방금 삽입한 마커가 즉시 사라진다. 그래서 메타데이터(첨부 목록)
-  // 만 갱신하고 title/content state 는 절대 건드리지 않는다.
-  async function uploadAndInsert(file: File, at?: number) {
-    if (!activeNoteId) return;
-    try {
-      const att = await api.uploadAttachment(token, activeNoteId, file);
-      insertMarkerAtCursor(buildAttachmentMarker({ ...att }), at);
-      // 첨부 패널이 새 항목을 보이게끔 활성 노트 메타만 다시 가져온다.
-      try {
-        const fresh = await api.getNote(token, activeNoteId);
-        setActiveNote(fresh);
-      } catch {
-        /* 메타 갱신 실패는 치명적이지 않음 */
-      }
-      void refreshUsage();
-    } catch (e) {
-      handleApiError(e);
-    }
-  }
-
-  // 음성 녹음 — 끝나면 업로드해서 캐럿 위치에 넣는다.
-  const audioRecorder = useAudioRecorder({
-    onRecorded: (file) => uploadAndInsert(file),
-    onUnsupported: setError,
-    onError: handleApiError,
-  });
-
-  async function handleDeleteAttachment(att: Attachment) {
-    const ok = await askConfirm({
-      title: "첨부 삭제",
-      message: `'${att.original_filename}' 첨부를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`,
-    });
-    if (!ok) return;
-    try {
-      await api.deleteAttachment(token, att.id);
-      // 본문에 남은 마커 줄도 같이 지운다 (안 지우면 깨진 자리표시만 남는다).
-      const view = editorViewRef.current;
-      if (view) {
-        const needle = `(attachment://${att.id})`;
-        const cur = view.state.doc.toString();
-        const next = cur
-          .split("\n")
-          .filter((line) => !line.includes(needle))
-          .join("\n");
-        if (next !== cur) replaceEditorDoc(next);
-      }
-      if (activeNoteId) await loadNote(activeNoteId);
-      void refreshUsage();
-    } catch (e) {
-      handleApiError(e);
-    }
   }
 
   async function handleRestoreVersion(v: NoteVersion) {
@@ -1070,39 +929,6 @@ export function MemoWorkbench({
     baseRef,
     session,
   });
-
-  /** 편집 영역 아무 곳에나 파일을 떨어뜨렸을 때 — 그 줄 끝에 첨부를 넣는다. */
-  function handleDropFiles(files: File[], x: number, y: number, widgetLine?: number): void {
-    const view = editorViewRef.current;
-    let anchor: number | undefined;
-    if (view) {
-      const doc = view.state.doc;
-      if (widgetLine !== undefined && widgetLine >= 1 && widgetLine <= doc.lines) {
-        anchor = doc.line(widgetLine).to;
-      } else {
-        const pos = view.posAtCoords({ x, y });
-        anchor = typeof pos === "number" ? doc.lineAt(pos).to : doc.length;
-      }
-      view.dispatch({ selection: { anchor } });
-      view.focus();
-    }
-    // 여러 개를 한 번에 놓으면 같은 줄 끝에 차례로 붙는다(뒤에 놓은 것이 위로).
-    for (const f of files) void uploadAndInsert(f, anchor);
-  }
-
-  // 편집 영역 밖(사이드바 등)에 파일을 떨어뜨리면 브라우저가 그 파일을 새 탭으로
-  // 열어 버린다. 앱 화면에서는 그 기본 동작을 막는다.
-  useEffect(() => {
-    const prevent = (ev: DragEvent) => {
-      if (ev.dataTransfer && Array.from(ev.dataTransfer.types).includes("Files")) ev.preventDefault();
-    };
-    window.addEventListener("dragover", prevent);
-    window.addEventListener("drop", prevent);
-    return () => {
-      window.removeEventListener("dragover", prevent);
-      window.removeEventListener("drop", prevent);
-    };
-  }, []);
 
   /** 노트를 열고 해당 줄(0부터)로 캐럿을 옮긴다 — 백링크·할 일 패널에서 쓴다. */
   async function openNoteAtLine(noteId: string, lineIndex: number): Promise<void> {
@@ -1200,7 +1026,7 @@ export function MemoWorkbench({
     updateFromView: updateSlashMenuFromView,
   } = useSlashMenu({
     editorViewRef,
-    insertTextAtCursor,
+    insertTextAtCursor: (text) => insertTextAtCursor(editorViewRef.current, text),
     imageInputRef,
     setDrawingMode,
     startAudioRecording: audioRecorder.start,
