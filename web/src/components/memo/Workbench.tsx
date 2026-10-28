@@ -66,6 +66,7 @@ import { useSidebarTree } from "./useSidebarTree";
 import { useEditorSession } from "./useEditorSession";
 import { useNoteLoader } from "./useNoteLoader";
 import { useTodoPanel } from "./useTodoPanel";
+import { useCommandPalette } from "./useCommandPalette";
 import { useStableHandlers } from "./useStableHandlers";
 import { templateShortcut, shortcutLabel } from "./templateShortcuts";
 import { renderTemplate } from "./templateVariables";
@@ -176,9 +177,7 @@ export function MemoWorkbench({
   const [drawingWidth, setDrawingWidth] = useState(2.5);
   const overlayHandleRef = useRef<OverlayDrawingLayerHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const commandInputRef = useRef<HTMLInputElement | null>(null);
-  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-  const [commandQuery, setCommandQuery] = useState("");
+  const palette = useCommandPalette({ suspended: !!templateDialog || !!confirmDialog });
   // Facet 컨텍스트의 insert/navigate 는 확장이 안정적이어야 하므로, 최신 구현은 ref 로 전달.
   const memoEditorInsertFileRef = useRef<(file: File) => void>(() => {});
   const memoEditorNavigateLinkRef = useRef<(title: string) => void>(() => {});
@@ -867,28 +866,11 @@ export function MemoWorkbench({
     }, 120);
   }
 
-  function openCommandPalette() {
-    setCommandQuery("");
-    setCommandPaletteOpen(true);
-  }
-
-  useEffect(() => {
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (templateDialog || confirmDialog || ev.isComposing || ev.keyCode === 229) return;
-      if ((ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === "k" || ev.key.toLowerCase() === "p")) {
-        ev.preventDefault();
-        openCommandPalette();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [templateDialog, confirmDialog]);
-
   const templateCreateRef = useRef(handleTemplateNote);
   templateCreateRef.current = handleTemplateNote;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (templateDialog || confirmDialog || commandPaletteOpen || event.repeat || event.getModifierState("AltGraph")) return;
+      if (templateDialog || confirmDialog || palette.open || event.repeat || event.getModifierState("AltGraph")) return;
       const shortcut = templateShortcut(event);
       if (!shortcut) return;
       const template = templateSettings.templates.find((item) => item.shortcut === shortcut);
@@ -898,12 +880,7 @@ export function MemoWorkbench({
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [templateSettings, templateDialog, confirmDialog, commandPaletteOpen]);
-
-  useEffect(() => {
-    if (!commandPaletteOpen) return;
-    window.setTimeout(() => commandInputRef.current?.focus(), 0);
-  }, [commandPaletteOpen]);
+  }, [templateSettings, templateDialog, confirmDialog, palette.open]);
 
   const appCommands = buildAppCommands({
     activeNoteId,
@@ -934,11 +911,6 @@ export function MemoWorkbench({
     })),
   ]);
 
-  const commandNeedle = commandQuery.trim().toLowerCase();
-  const filteredAppCommands = appCommands.filter((cmd) => {
-    if (!commandNeedle) return true;
-    return `${cmd.title} ${cmd.description} ${cmd.keywords}`.toLowerCase().includes(commandNeedle);
-  });
 
   const {
     slashMenu,
@@ -1331,17 +1303,13 @@ export function MemoWorkbench({
       ) : null}
 
       <CommandPalette
-        open={commandPaletteOpen}
-        query={commandQuery}
-        onQueryChange={setCommandQuery}
-        filteredCommands={filteredAppCommands}
-        inputRef={commandInputRef}
-        onClose={() => setCommandPaletteOpen(false)}
-        onRun={(cmd) => {
-          setCommandPaletteOpen(false);
-          setCommandQuery("");
-          cmd.run();
-        }}
+        open={palette.open}
+        query={palette.query}
+        onQueryChange={palette.setQuery}
+        filteredCommands={palette.filter(appCommands)}
+        inputRef={palette.inputRef}
+        onClose={palette.close}
+        onRun={palette.run}
       />
 
       {templateDialog ? <TemplateManager
