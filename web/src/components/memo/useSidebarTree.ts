@@ -108,6 +108,9 @@ export function useSidebarTree(options: Options) {
     });
   }, [notes]);
 
+  // 핸들러는 렌더마다 새로 만들어지므로 ref 로 최신 것을 부른다 (리스너를 매번 다시 달지 않게).
+  const deleteSelectedRef = useRef(handleDeleteSelectedNotes);
+  deleteSelectedRef.current = handleDeleteSelectedNotes;
   useEffect(() => {
     if (selectedNoteIds.size === 0 || suspended) return;
     const onKeyDownDelete = (ev: KeyboardEvent) => {
@@ -124,11 +127,11 @@ export function useSidebarTree(options: Options) {
         if (editable) return;
       }
       ev.preventDefault();
-      void handleDeleteSelectedNotes();
+      void deleteSelectedRef.current();
     };
     document.addEventListener("keydown", onKeyDownDelete);
     return () => document.removeEventListener("keydown", onKeyDownDelete);
-  }, [handleDeleteSelectedNotes, selectedNoteIds.size, suspended]);
+  }, [selectedNoteIds.size, suspended]);
 
   // 컨텍스트 메뉴: ESC 또는 바깥 클릭으로 닫기.
   // 메뉴 안 클릭은 무시해야 메뉴 버튼 onClick이 정상 발화한다.

@@ -1,7 +1,7 @@
 // Workbench 의 작은 오버레이 UI 묶음. 각 컴포넌트는 props 만 받는 순수 표시용.
 // 상태 (= 어떤 폴더를 우클릭했는지, 어떤 항목 위에 호버 중인지 등) 와 콜백
-// (= 새 노트 / 폴더 생성, 이름 변경, 삭제 등) 은 모두 부모(MemoWorkbench) 가
-// 가지고 있다.
+// (= 새 노트 / 폴더 생성, 이름 변경, 삭제 등) 은 모두 부모(MemoWorkbench 와 그 훅들)
+// 가 가지고 있다.
 
 import { formatDateTime } from "./utils";
 import type { ConfirmDialogState, ContextMenuTarget, HoverMeta } from "./workbenchTypes";
