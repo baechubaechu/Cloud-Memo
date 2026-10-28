@@ -438,6 +438,42 @@ export function useSidebarTree(options: Options) {
     [folderOptions, notes],
   );
 
+  /**
+   * 끌어 온 노트·노트 묶음·폴더를 targetFolderId 안으로 (null 이면 루트로) 옮긴다.
+   * dataTransfer 를 먼저 보고, 못 읽으면(일부 브라우저) dragstart 때 적어 둔 ref 를 쓴다.
+   */
+  function dropOnto(ev: React.DragEvent, targetFolderId: string | null) {
+    const ghost = draggedItemRef.current;
+    const payload = resolveDraggedPayload(ev);
+    draggedItemRef.current = null;
+    setDraggedItem(null);
+    setFolderDropHoverId(null);
+    setRootDropActive(false);
+    if (payload.noteIds && payload.noteIds.length >= 2) {
+      void handleMoveNotesToFolder(payload.noteIds, targetFolderId);
+      return;
+    }
+    if (payload.noteId) {
+      void handleMoveNoteToFolder(payload.noteId, targetFolderId);
+      return;
+    }
+    if (payload.folderId && payload.folderId !== targetFolderId) {
+      void handleMoveFolderToParent(payload.folderId, targetFolderId);
+      return;
+    }
+    if (ghost?.kind === "note") {
+      void handleMoveNoteToFolder(ghost.id, targetFolderId);
+      return;
+    }
+    if (ghost?.kind === "note-multi") {
+      void handleMoveNotesToFolder(ghost.ids, targetFolderId);
+      return;
+    }
+    if (ghost?.kind === "folder" && ghost.id !== targetFolderId) {
+      void handleMoveFolderToParent(ghost.id, targetFolderId);
+    }
+  }
+
   const handleSelectNote = useCallback(
     (note: NoteListItem, opts: { shiftKey: boolean; toggleKey: boolean }) => {
       const folderId = note.folder_id ?? null;
@@ -525,6 +561,7 @@ export function useSidebarTree(options: Options) {
     handleMoveNotesToFolder,
     handleMoveFolderToParent,
     handleDeleteFolder,
+    dropOnto,
   });
 
   return {
@@ -550,7 +587,6 @@ export function useSidebarTree(options: Options) {
     toggleExpandAllFolders,
     childrenOf,
     notesInFolder,
-    resolveDraggedPayload,
     handleSelectNote,
     canDropIntoFolder,
   };

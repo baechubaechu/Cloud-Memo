@@ -104,12 +104,8 @@ export type WorkbenchSidebarProps = {
   rootDropActive: boolean;
   setRootDropActive: (v: boolean) => void;
   canDropIntoFolder: (folderId: string, item: DragItem | null) => boolean;
-  resolveDraggedPayload: (
-    ev: React.DragEvent,
-  ) => { noteId?: string; noteIds?: string[]; folderId?: string };
-  handleMoveNoteToFolder: (noteId: string, folderId: string | null) => void;
-  handleMoveNotesToFolder: (noteIds: string[], folderId: string | null) => void;
-  handleMoveFolderToParent: (folderId: string, parentId: string | null) => void;
+  /** 끌어 온 항목을 그 폴더 안으로 (null 이면 루트로) 옮긴다. */
+  dropOnto: (ev: React.DragEvent, targetFolderId: string | null) => void;
 
   // ---- 푸터 ----
   usage: StorageUsage | null;
@@ -164,10 +160,7 @@ export const WorkbenchSidebar = memo(function WorkbenchSidebar(props: WorkbenchS
     rootDropActive,
     setRootDropActive,
     canDropIntoFolder,
-    resolveDraggedPayload,
-    handleMoveNoteToFolder,
-    handleMoveNotesToFolder,
-    handleMoveFolderToParent,
+    dropOnto,
     usage,
     handleExport,
   } = props;
@@ -343,35 +336,7 @@ export const WorkbenchSidebar = memo(function WorkbenchSidebar(props: WorkbenchS
           onDrop={(ev) => {
             ev.preventDefault();
             ev.stopPropagation();
-            const ghost = draggedItemRef.current;
-            const payload = resolveDraggedPayload(ev);
-            draggedItemRef.current = null;
-            setDraggedItem(null);
-            setFolderDropHoverId(null);
-            setRootDropActive(false);
-            if (payload.noteIds && payload.noteIds.length >= 2) {
-              handleMoveNotesToFolder(payload.noteIds, f.id);
-              return;
-            }
-            if (payload.noteId) {
-              handleMoveNoteToFolder(payload.noteId, f.id);
-              return;
-            }
-            if (payload.folderId && payload.folderId !== f.id) {
-              handleMoveFolderToParent(payload.folderId, f.id);
-              return;
-            }
-            if (ghost?.kind === "note") {
-              handleMoveNoteToFolder(ghost.id, f.id);
-              return;
-            }
-            if (ghost?.kind === "note-multi") {
-              handleMoveNotesToFolder(ghost.ids, f.id);
-              return;
-            }
-            if (ghost?.kind === "folder" && ghost.id !== f.id) {
-              handleMoveFolderToParent(ghost.id, f.id);
-            }
+            dropOnto(ev, f.id);
           }}
         >
           <div
@@ -677,40 +642,7 @@ export const WorkbenchSidebar = memo(function WorkbenchSidebar(props: WorkbenchS
         }}
         onDrop={(ev) => {
           ev.preventDefault();
-          setRootDropActive(false);
-          const ghost = draggedItemRef.current;
-          const plain = ev.dataTransfer.getData("text/plain").trim();
-          const multiRaw = ev.dataTransfer.getData(DND_MIME_NOTE_MULTI);
-          let nid = ev.dataTransfer.getData(DND_MIME_NOTE);
-          let fid = ev.dataTransfer.getData(DND_MIME_FOLDER);
-          let multi: string[] = [];
-          if (multiRaw) {
-            try {
-              const parsed = JSON.parse(multiRaw);
-              if (Array.isArray(parsed))
-                multi = parsed.filter((x): x is string => typeof x === "string");
-            } catch {}
-          }
-          if (!fid && !nid && plain) {
-            if (notes.some((x) => x.id === plain)) nid = plain;
-            else if (folderOptions.some((x) => x.id === plain)) fid = plain;
-          }
-          draggedItemRef.current = null;
-          setDraggedItem(null);
-          setFolderDropHoverId(null);
-          if (multi.length >= 2) {
-            handleMoveNotesToFolder(multi, null);
-          } else if (nid) {
-            handleMoveNoteToFolder(nid, null);
-          } else if (fid) {
-            handleMoveFolderToParent(fid, null);
-          } else if (ghost?.kind === "note") {
-            handleMoveNoteToFolder(ghost.id, null);
-          } else if (ghost?.kind === "note-multi") {
-            handleMoveNotesToFolder(ghost.ids, null);
-          } else if (ghost?.kind === "folder") {
-            handleMoveFolderToParent(ghost.id, null);
-          }
+          dropOnto(ev, null);
         }}
       >
         {showTree ? (
@@ -732,36 +664,7 @@ export const WorkbenchSidebar = memo(function WorkbenchSidebar(props: WorkbenchS
                   onDrop={(ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    setRootDropActive(false);
-                    const ghost = draggedItemRef.current;
-                    const plain = ev.dataTransfer.getData("text/plain").trim();
-                    const multiRaw = ev.dataTransfer.getData(DND_MIME_NOTE_MULTI);
-                    let nid = ev.dataTransfer.getData(DND_MIME_NOTE);
-                    let fid = ev.dataTransfer.getData(DND_MIME_FOLDER);
-                    let multi: string[] = [];
-                    if (multiRaw) {
-                      try {
-                        const parsed = JSON.parse(multiRaw);
-                        if (Array.isArray(parsed))
-                          multi = parsed.filter((x): x is string => typeof x === "string");
-                      } catch {}
-                    }
-                    if (!fid && !nid && plain) {
-                      if (notes.some((x) => x.id === plain)) nid = plain;
-                      else if (folderOptions.some((x) => x.id === plain)) fid = plain;
-                    }
-                    draggedItemRef.current = null;
-                    setDraggedItem(null);
-                    setFolderDropHoverId(null);
-                    if (multi.length >= 2) handleMoveNotesToFolder(multi, null);
-                    else if (nid) handleMoveNoteToFolder(nid, null);
-                    else if (fid) handleMoveFolderToParent(fid, null);
-                    else if (ghost?.kind === "note")
-                      handleMoveNoteToFolder(ghost.id, null);
-                    else if (ghost?.kind === "note-multi")
-                      handleMoveNotesToFolder(ghost.ids, null);
-                    else if (ghost?.kind === "folder")
-                      handleMoveFolderToParent(ghost.id, null);
+                    dropOnto(ev, null);
                   }}
                   className={`rounded border border-dashed px-2 py-1.5 text-center text-[11px] text-ink-900/60 ${
                     rootDropActive

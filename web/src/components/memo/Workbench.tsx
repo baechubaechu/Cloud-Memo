@@ -402,15 +402,12 @@ export function MemoWorkbench({
     cancelRename,
     commitRename,
     handleNoteContextDelete,
-    handleMoveNoteToFolder,
-    handleMoveNotesToFolder,
-    handleMoveFolderToParent,
     handleDeleteFolder,
     childrenOf,
     notesInFolder,
-    resolveDraggedPayload,
     handleSelectNote,
     canDropIntoFolder,
+    dropOnto,
   } = useSidebarTree({
     token,
     folders,
@@ -1705,10 +1702,7 @@ export function MemoWorkbench({
       rootDropActive={rootDropActive}
       setRootDropActive={setRootDropActive}
       canDropIntoFolder={canDropIntoFolder}
-      resolveDraggedPayload={resolveDraggedPayload}
-      handleMoveNoteToFolder={handleMoveNoteToFolder}
-      handleMoveNotesToFolder={handleMoveNotesToFolder}
-      handleMoveFolderToParent={handleMoveFolderToParent}
+      dropOnto={dropOnto}
       usage={usage}
       handleExport={sidebarHandlers.handleExport}
     />
