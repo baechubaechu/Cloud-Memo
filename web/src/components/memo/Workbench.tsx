@@ -4,7 +4,6 @@ import { useRouter } from "next/navigation";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { EditorView } from "@codemirror/view";
-import { IconArchive, IconFile, IconList, IconLogOut, IconPlus, IconSidebarToggle, IconStar } from "./Icons";
 import {
   cmEditorVisualTheme,
   editorChecklistAutoTrigger,
@@ -48,7 +47,8 @@ import type {
 } from "./workbenchTypes";
 import { todayNoteTitle, buildOfflineNoteList } from "./workbenchHelpers";
 import { CommandPalette } from "./CommandPalette";
-import { ConfirmDialog, ContextMenu, HoverTooltip } from "./WorkbenchOverlays";
+import { ConfirmDialog, ContextMenu, HoverTooltip, StatusBanners } from "./WorkbenchOverlays";
+import { WorkbenchRibbon } from "./WorkbenchRibbon";
 import { WorkbenchSidebar } from "./WorkbenchSidebar";
 import { WorkbenchRightPanel } from "./WorkbenchRightPanel";
 import { WorkbenchEditorCard } from "./WorkbenchEditor";
@@ -983,66 +983,20 @@ export function MemoWorkbench({
 
   // ---------- 데스크탑 옵시디언풍 사이드 ----------
 
-  const ribbonModes: Array<{ key: ListMode; label: string; Icon: typeof IconList }> = [
-    { key: "active", label: "전체", Icon: IconList },
-    { key: "favorite", label: "즐겨찾기", Icon: IconStar },
-    { key: "archive", label: "아카이브", Icon: IconArchive },
-  ];
-
   const ribbonCard = (
-    <div className="flex h-full w-11 flex-col items-center gap-1 border-r border-ink-900/10 bg-[#f4f4f3] py-2 text-ink-900/55">
-      <button
-        type="button"
-        title={sidebarCollapsed ? "사이드바 펼치기" : "사이드바 접기"}
-        aria-label={sidebarCollapsed ? "사이드바 펼치기" : "사이드바 접기"}
-        onClick={() => setSidebarCollapsed((v) => !v)}
-        className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/5 hover:text-ink-900"
-      >
-        <IconSidebarToggle size={16} />
-      </button>
-      <div className="my-1 h-[1px] w-6 bg-ink-900/10" />
-      <button
-        type="button"
-        title="새 노트"
-        aria-label="새 노트"
-        disabled={debouncedQuery.length >= 1}
-        onClick={handleNewNote}
-        className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/5 hover:text-ink-900 disabled:opacity-30"
-      >
-        <IconPlus size={16} />
-      </button>
-      {ribbonModes.map((m) => {
-        const isOn = mode === m.key;
-        const Icon = m.Icon;
-        return (
-          <button
-            key={m.key}
-            type="button"
-            title={m.label}
-            aria-label={m.label}
-            onClick={() => {
-              setMode(m.key);
-              setSelectedTagId(undefined);
-            }}
-            className={`grid h-8 w-8 place-items-center rounded-md ${
-              isOn ? "bg-black/10 text-ink-900" : "hover:bg-black/5 hover:text-ink-900"
-            }`}
-          >
-            <Icon size={16} />
-          </button>
-        );
-      })}
-      <button type="button" title="노트 템플릿" aria-label="노트 템플릿" onClick={() => setTemplateDialog(true)} className="grid h-8 w-8 place-items-center rounded-md hover:bg-black/5 hover:text-ink-900"><IconFile size={16} /></button>
-      <button
-        type="button"
-        title="로그아웃"
-        aria-label="로그아웃"
-        onClick={onLogout}
-        className="mt-auto grid h-8 w-8 place-items-center rounded-md hover:bg-black/5 hover:text-ink-900"
-      >
-        <IconLogOut size={16} />
-      </button>
-    </div>
+    <WorkbenchRibbon
+      sidebarCollapsed={sidebarCollapsed}
+      onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+      newNoteDisabled={debouncedQuery.length >= 1}
+      onNewNote={handleNewNote}
+      mode={mode}
+      onModeChange={(next) => {
+        setMode(next);
+        setSelectedTagId(undefined);
+      }}
+      onOpenTemplates={() => setTemplateDialog(true)}
+      onLogout={onLogout}
+    />
   );
 
   // ---------- 폴더 트리 빌드 ----------
@@ -1222,28 +1176,16 @@ export function MemoWorkbench({
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-white">
-      {linkNotice ? (
-        <div role="status" aria-live="polite" className="pointer-events-none fixed left-1/2 top-4 z-50 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-800 shadow-lg">
-          {linkNotice.count > 0
-            ? `${linkNotice.count}개 노트의 링크가 변경되었습니다.`
-            : "이름·경로가 변경되었습니다. 갱신할 링크는 없습니다."}
-        </div>
-      ) : null}
-      {offline ? (
-        <div className="border-b border-slate-300 bg-slate-100 px-4 py-1.5 text-[12px] text-slate-700">
-          {offlineStore.isActive()
-            ? "오프라인 — 이 기기에 보관한 사본으로 작업 중입니다. 고친 내용은 연결되면 서버에 반영됩니다."
-            : "오프라인 — 서버에 연결할 수 없습니다. 이 기기는 노트 보관이 꺼져 있어, 지금 열린 노트만 이어서 쓸 수 있고 연결되면 저장됩니다."}
-        </div>
-      ) : null}
-      {titleWarning || error ? (
-        <div className="border-b border-amber-400/40 bg-amber-50 px-4 py-2 text-[13px] text-amber-900">
-          ⚠️ {titleWarning || error}
-          <button type="button" className="float-right ml-4 text-[11px] font-semibold" onClick={() => { setError(null); setTitleWarning(null); }}>
-            숨김
-          </button>
-        </div>
-      ) : null}
+      <StatusBanners
+        linkNotice={linkNotice}
+        offline={offline}
+        keepsDeviceCopy={offlineStore.isActive()}
+        warning={titleWarning || error}
+        onDismissWarning={() => {
+          setError(null);
+          setTitleWarning(null);
+        }}
+      />
 
       <CommandPalette
         open={palette.open}

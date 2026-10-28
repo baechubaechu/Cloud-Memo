@@ -217,3 +217,44 @@ export function ConfirmDialog({ state, onResolve }: ConfirmDialogProps) {
     </div>
   );
 }
+
+// ---------- 상단 알림 줄: 링크 갱신 알림, 오프라인, 경고 ----------
+
+type StatusBannersProps = {
+  /** 이름·경로 변경으로 링크를 고친 노트 수 (잠깐 떴다 사라진다). */
+  linkNotice: { count: number } | null;
+  offline: boolean;
+  /** 이 기기에 노트 사본을 보관 중인지 (오프라인 문구가 달라진다). */
+  keepsDeviceCopy: boolean;
+  warning: string | null;
+  onDismissWarning: () => void;
+};
+
+export function StatusBanners({ linkNotice, offline, keepsDeviceCopy, warning, onDismissWarning }: StatusBannersProps) {
+  return (
+    <>
+      {linkNotice ? (
+        <div role="status" aria-live="polite" className="pointer-events-none fixed left-1/2 top-4 z-50 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-emerald-200 bg-white px-4 py-3 text-sm text-emerald-800 shadow-lg">
+          {linkNotice.count > 0
+            ? `${linkNotice.count}개 노트의 링크가 변경되었습니다.`
+            : "이름·경로가 변경되었습니다. 갱신할 링크는 없습니다."}
+        </div>
+      ) : null}
+      {offline ? (
+        <div className="border-b border-slate-300 bg-slate-100 px-4 py-1.5 text-[12px] text-slate-700">
+          {keepsDeviceCopy
+            ? "오프라인 — 이 기기에 보관한 사본으로 작업 중입니다. 고친 내용은 연결되면 서버에 반영됩니다."
+            : "오프라인 — 서버에 연결할 수 없습니다. 이 기기는 노트 보관이 꺼져 있어, 지금 열린 노트만 이어서 쓸 수 있고 연결되면 저장됩니다."}
+        </div>
+      ) : null}
+      {warning ? (
+        <div className="border-b border-amber-400/40 bg-amber-50 px-4 py-2 text-[13px] text-amber-900">
+          ⚠️ {warning}
+          <button type="button" className="float-right ml-4 text-[11px] font-semibold" onClick={onDismissWarning}>
+            숨김
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
