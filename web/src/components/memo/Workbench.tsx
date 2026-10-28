@@ -442,6 +442,8 @@ export function MemoWorkbench({
     handleSelectNote,
     canDropIntoFolder,
     dropOnto,
+    deleteNoteWithConfirm,
+    expandFolder,
   } = useSidebarTree({
     token,
     folders,
@@ -601,13 +603,7 @@ export function MemoWorkbench({
         tag_ids: selectedTagId ? [selectedTagId] : [],
       });
       await activateFreshDraft(draft);
-      if (folderId) {
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          next.add(folderId);
-          return next;
-        });
-      }
+      if (folderId) expandFolder(folderId);
     } catch (e) {
       handleApiError(e);
     }
@@ -644,26 +640,6 @@ export function MemoWorkbench({
         tag_ids: [],
       });
       await activateFreshDraft(draft);
-    } catch (e) {
-      handleApiError(e);
-    }
-  }
-
-  async function handleListItemAction(item: NoteListItem) {
-    const label = item.title || "(무제 노트)";
-    if (
-      !(await askConfirm({
-        title: "노트 삭제",
-        message: `'${label}' 노트를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`,
-      }))
-    ) {
-      return;
-    }
-    try {
-      await api.deleteNote(token, item.id);
-      await reloadNotes();
-      void refreshUsage();
-      if (activeNoteId === item.id) closeActiveNote();
     } catch (e) {
       handleApiError(e);
     }
@@ -962,20 +938,7 @@ export function MemoWorkbench({
       onToggleFavorite={() => void toggleFavorite()}
       onToggleArchive={() => void toggleArchive()}
       onDeleteNote={() => {
-        if (!activeNote) return;
-        void handleListItemAction({
-          id: activeNote.id,
-          title: activeNote.title,
-          folder_id: activeNote.folder_id,
-          is_favorite: activeNote.is_favorite,
-          is_archived: activeNote.is_archived,
-          created_at: activeNote.created_at,
-          updated_at: activeNote.updated_at,
-          deleted_at: activeNote.deleted_at,
-          tags: activeNote.tags,
-          revision: activeNote.revision,
-          change_seq: activeNote.change_seq,
-        });
+        if (activeNote) void deleteNoteWithConfirm(activeNote.id, activeNote.title);
       }}
       imageInputRef={imageInputRef}
       onPickImageFile={(file) => void uploadAndInsert(file)}

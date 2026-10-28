@@ -166,15 +166,20 @@ export function useSidebarTree(options: Options) {
       return new Set(folderOptions.map((f) => f.id));
     });
   }, [allFoldersExpanded, folderOptions]);
+  /** 폴더를 펼친 상태로 둔다 (새 항목을 넣거나 옮긴 뒤 보이게). */
+  function expandFolder(folderId: string) {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      next.add(folderId);
+      return next;
+    });
+  }
+
   // 새 폴더 생성: 인라인 input row를 띄워 사용자가 이름을 입력하게 함
   function beginCreateFolder(parentId: string | null) {
     setRenaming(null);
     if (parentId) {
-      setExpandedFolders((prev) => {
-        const next = new Set(prev);
-        next.add(parentId);
-        return next;
-      });
+      expandFolder(parentId);
     }
     setCreatingFolder({ parentId, draft: "" });
   }
@@ -249,10 +254,9 @@ export function useSidebarTree(options: Options) {
     }
   }
 
-  async function handleNoteContextDelete(noteId: string) {
-    const n = notes.find((x) => x.id === noteId);
-    if (!n) return;
-    const label = n.title || "(무제 노트)";
+  /** 확인을 받고 노트 하나를 지운다. 열려 있던 노트면 닫는다 (에디터의 삭제 버튼도 쓴다). */
+  async function deleteNoteWithConfirm(noteId: string, title: string) {
+    const label = title || "(무제 노트)";
     const msg = `'${label}' 노트를 삭제하시겠어요? 이 작업은 되돌릴 수 없습니다.`;
     if (!(await askConfirm({ title: "노트 삭제", message: msg }))) return;
     try {
@@ -265,6 +269,12 @@ export function useSidebarTree(options: Options) {
     }
   }
 
+  async function handleNoteContextDelete(noteId: string) {
+    const n = notes.find((x) => x.id === noteId);
+    if (!n) return;
+    await deleteNoteWithConfirm(n.id, n.title);
+  }
+
   async function handleMoveNoteToFolder(noteId: string, folderId: string | null) {
     try {
       const note = notes.find((n) => n.id === noteId);
@@ -272,11 +282,7 @@ export function useSidebarTree(options: Options) {
       await patchNote(token, noteId, { folder_id: folderId });
       await reloadNotes();
       if (folderId) {
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          next.add(folderId);
-          return next;
-        });
+        expandFolder(folderId);
       }
     } catch (e) {
       handleApiError(e);
@@ -296,11 +302,7 @@ export function useSidebarTree(options: Options) {
       const failed = results.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") handleApiError(failed.reason);
       if (folderId) {
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          next.add(folderId);
-          return next;
-        });
+        expandFolder(folderId);
       }
     } catch (e) {
       handleApiError(e);
@@ -323,11 +325,7 @@ export function useSidebarTree(options: Options) {
       await patchFolder(token, folderId, { parent_id: parentId });
       await refreshMeta();
       if (parentId) {
-        setExpandedFolders((prev) => {
-          const next = new Set(prev);
-          next.add(parentId);
-          return next;
-        });
+        expandFolder(parentId);
       }
     } catch (e) {
       handleApiError(e);
@@ -541,6 +539,8 @@ export function useSidebarTree(options: Options) {
     cancelRename,
     commitRename,
     handleNoteContextDelete,
+    deleteNoteWithConfirm,
+    expandFolder,
     handleMoveNoteToFolder,
     handleMoveNotesToFolder,
     handleMoveFolderToParent,
