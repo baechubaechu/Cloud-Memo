@@ -1,14 +1,9 @@
-// 데스크톱 옵시디언풍 사이드바. Workbench 가 들고 있던 트리/검색/DnD/멀티선택
-// JSX + 두 개의 큰 render helper(`renderNoteRow`, `renderTreeItems`) 를 통째로
-// 옮긴 것. state / handler / selector 는 Workbench 가 그대로 들고 있고, 이
-// 컴포넌트는 props 로만 받는다 (= 단방향 표시 컴포넌트).
-//
-// "props 가 30개가 넘는데 너무 많지 않냐" — 맞다. 다만 1차 분리 단계의 목표는
-// "줄 수가 가장 큰 덩어리를 외부 파일로 빼되, 동작/상태 소유권은 건드리지 않는
-// 다" 이다. 다음 단계에서 SidebarContext 같은 가벼운 컨텍스트로 prop 묶음을
-// 정리할 수 있다.
+// 데스크톱 옵시디언풍 사이드바. 트리/검색/DnD/멀티선택 JSX + 두 개의 큰 render
+// helper(`renderNoteRow`, `renderTreeItems`). state / handler / selector 는
+// ./useSidebarTree 와 Workbench 가 들고 있고, 이 컴포넌트는 props 로만 받는다
+// (= 단방향 표시 컴포넌트).
 
-import { type ReactElement, type RefObject } from "react";
+import { memo, type ReactElement, type RefObject } from "react";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -121,7 +116,9 @@ export type WorkbenchSidebarProps = {
   handleExport: () => void;
 };
 
-export function WorkbenchSidebar(props: WorkbenchSidebarProps): ReactElement {
+// 본문 입력마다 Workbench 가 다시 그려져도 props 가 같으면 트리를 다시 그리지 않는다.
+// 그래서 넘기는 핸들러는 고정돼 있어야 한다 (useStableHandlers).
+export const WorkbenchSidebar = memo(function WorkbenchSidebar(props: WorkbenchSidebarProps): ReactElement {
   const {
     query,
     onQueryChange,
@@ -847,4 +844,4 @@ export function WorkbenchSidebar(props: WorkbenchSidebarProps): ReactElement {
       </footer>
     </aside>
   );
-}
+});

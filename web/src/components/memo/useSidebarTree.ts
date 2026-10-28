@@ -7,6 +7,22 @@ import type { Folder, NoteDetail, NoteListItem } from "@/lib/api";
 import { api } from "@/lib/api";
 import type { ContextMenuTarget, DragItem, SelectionAnchor } from "./workbenchTypes";
 import { DND_MIME_FOLDER, DND_MIME_NOTE, DND_MIME_NOTE_MULTI, compareName } from "./utils";
+import { useStableHandlers } from "./useStableHandlers";
+
+const NO_FOLDERS: Folder[] = [];
+const NO_NOTES: NoteListItem[] = [];
+
+/** 순서를 유지한 채 key 별로 묶는다. */
+function groupBy<T, K>(items: T[], keyOf: (item: T) => K): Map<K, T[]> {
+  const groups = new Map<K, T[]>();
+  for (const item of items) {
+    const key = keyOf(item);
+    const list = groups.get(key);
+    if (list) list.push(item);
+    else groups.set(key, [item]);
+  }
+  return groups;
+}
 
 type Options = {
   token: string;
@@ -377,15 +393,26 @@ export function useSidebarTree(options: Options) {
     }
   }
 
-  // 폴더는 folderOptions에서 compareName(숫자→영문→한글)으로만 정렬됨. filter로 유지.
-  const childrenOf = (parentId: string | null) =>
-    folderOptions.filter((f) => (f.parent_id ?? null) === parentId);
-  // 노트는 별도 sort_order가 없으므로 매 렌더에서 이름 자연 정렬 (숫자→영문→한글)
-  const notesInFolder = (folderId: string | null) =>
-    notesWithLiveTitle
-      .filter((n) => (n.folder_id ?? null) === folderId)
-      .slice()
-      .sort((a, b) => compareName(a.title || "", b.title || "") || a.id.localeCompare(b.id));
+  // 폴더는 folderOptions에서 compareName(숫자→영문→한글)으로만 정렬됨. 그 순서 그대로
+  // 부모별로 묶어 둔다 (트리를 그릴 때마다 전체를 다시 거르지 않게).
+  const foldersByParent = useMemo(() => groupBy(folderOptions, (f) => f.parent_id ?? null), [folderOptions]);
+  const childrenOf = useCallback(
+    (parentId: string | null) => foldersByParent.get(parentId) ?? NO_FOLDERS,
+    [foldersByParent],
+  );
+  // 노트는 별도 sort_order가 없으므로 이름 자연 정렬 (숫자→영문→한글). 목록이 바뀔 때만
+  // 폴더별로 한 번 정렬한다.
+  const notesByFolder = useMemo(() => {
+    const groups = groupBy(notesWithLiveTitle, (n) => n.folder_id ?? null);
+    for (const list of groups.values()) {
+      list.sort((a, b) => compareName(a.title || "", b.title || "") || a.id.localeCompare(b.id));
+    }
+    return groups;
+  }, [notesWithLiveTitle]);
+  const notesInFolder = useCallback(
+    (folderId: string | null) => notesByFolder.get(folderId) ?? NO_NOTES,
+    [notesByFolder],
+  );
 
   const resolveDraggedPayload = useCallback(
     (ev: React.DragEvent): { noteId?: string; noteIds?: string[]; folderId?: string } => {
@@ -484,7 +511,24 @@ export function useSidebarTree(options: Options) {
     [folderOptions, notes],
   );
 
+  // 사이드바(React.memo)에 넘기는 이벤트 핸들러는 렌더마다 새로 만들지 않는다.
+  const handlers = useStableHandlers({
+    beginCreateFolder,
+    cancelCreateFolder,
+    commitCreateFolder,
+    toggleFolderExpanded,
+    beginRename,
+    cancelRename,
+    commitRename,
+    handleNoteContextDelete,
+    handleMoveNoteToFolder,
+    handleMoveNotesToFolder,
+    handleMoveFolderToParent,
+    handleDeleteFolder,
+  });
+
   return {
+    ...handlers,
     expandedFolders,
     setExpandedFolders,
     contextMenu,
@@ -504,18 +548,6 @@ export function useSidebarTree(options: Options) {
     folderOptions,
     allFoldersExpanded,
     toggleExpandAllFolders,
-    beginCreateFolder,
-    cancelCreateFolder,
-    commitCreateFolder,
-    toggleFolderExpanded,
-    beginRename,
-    cancelRename,
-    commitRename,
-    handleNoteContextDelete,
-    handleMoveNoteToFolder,
-    handleMoveNotesToFolder,
-    handleMoveFolderToParent,
-    handleDeleteFolder,
     childrenOf,
     notesInFolder,
     resolveDraggedPayload,

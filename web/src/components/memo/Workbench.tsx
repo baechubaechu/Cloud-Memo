@@ -72,6 +72,7 @@ import { useBacklinks } from "./useBacklinks";
 import { useNoteSync } from "./useNoteSync";
 import { useAutosave } from "./useAutosave";
 import { useSidebarTree } from "./useSidebarTree";
+import { useStableHandlers } from "./useStableHandlers";
 import { templateShortcut, shortcutLabel } from "./templateShortcuts";
 import { renderTemplate } from "./templateVariables";
 import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, folderLinkPath, type LinkNote } from "./wikilinkPaths";
@@ -1651,6 +1652,13 @@ export function MemoWorkbench({
   // 는 ./useSidebarTree 가 들고 있고, 이 컴포넌트는 props 로만 표시한다. (renderNoteRow,
   // renderTreeItems, sidebarCard JSX, 그리고 두 개의 작은 derived 값
   // rootNotesNode / draggingNeedsRootLanding 도 모두 그쪽으로 이사.)
+  // 사이드바는 React.memo — 본문 입력으로 Workbench 가 다시 그려질 때 트리 전체를
+  // 다시 그리지 않도록 핸들러를 고정해서 넘긴다.
+  const sidebarHandlers = useStableHandlers({
+    handleNewNoteIn: (id: string | null) => void handleNewNoteIn(id),
+    loadNote: (id: string) => void loadNote(id),
+    handleExport: () => void handleExport(),
+  });
   const sidebarCard = (
     <WorkbenchSidebar
       query={query}
@@ -1664,7 +1672,7 @@ export function MemoWorkbench({
       allFoldersExpanded={allFoldersExpanded}
       toggleExpandAllFolders={toggleExpandAllFolders}
       beginCreateFolder={beginCreateFolder}
-      handleNewNoteIn={(id) => void handleNewNoteIn(id)}
+      handleNewNoteIn={sidebarHandlers.handleNewNoteIn}
       debouncedQuery={debouncedQuery}
       notes={notesWithLiveTitle}
       expandedFolders={expandedFolders}
@@ -1676,14 +1684,14 @@ export function MemoWorkbench({
       selectedNoteIds={selectedNoteIds}
       setSelectedFolderId={setSelectedFolderId}
       handleSelectNote={handleSelectNote}
-      loadNote={(id) => void loadNote(id)}
+      loadNote={sidebarHandlers.loadNote}
       renaming={renaming}
       setRenaming={setRenaming}
-      commitRename={() => void commitRename()}
+      commitRename={commitRename}
       cancelRename={cancelRename}
       creatingFolder={creatingFolder}
       setCreatingFolder={setCreatingFolder}
-      commitCreateFolder={() => void commitCreateFolder()}
+      commitCreateFolder={commitCreateFolder}
       cancelCreateFolder={cancelCreateFolder}
       setContextMenu={setContextMenu}
       scheduleHoverMeta={scheduleHoverMeta}
@@ -1698,11 +1706,11 @@ export function MemoWorkbench({
       setRootDropActive={setRootDropActive}
       canDropIntoFolder={canDropIntoFolder}
       resolveDraggedPayload={resolveDraggedPayload}
-      handleMoveNoteToFolder={(nid, fid) => void handleMoveNoteToFolder(nid, fid)}
-      handleMoveNotesToFolder={(nids, fid) => void handleMoveNotesToFolder(nids, fid)}
-      handleMoveFolderToParent={(fid, pid) => void handleMoveFolderToParent(fid, pid)}
+      handleMoveNoteToFolder={handleMoveNoteToFolder}
+      handleMoveNotesToFolder={handleMoveNotesToFolder}
+      handleMoveFolderToParent={handleMoveFolderToParent}
       usage={usage}
-      handleExport={() => void handleExport()}
+      handleExport={sidebarHandlers.handleExport}
     />
   );
 
