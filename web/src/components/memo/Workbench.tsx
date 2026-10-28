@@ -123,6 +123,9 @@ export function MemoWorkbench({
   const [templateDialog, setTemplateDialog] = useState<boolean | null>(null);
   const templateCreationBusy = useRef(false);
   const linkCandidates = useMemo(() => buildLinkCandidates(linkNotes, folders), [linkNotes, folders]);
+  // 확장(위키링크 자동완성)·백링크처럼 목록이 바뀔 때마다 다시 만들면 안 되는 곳은 ref 로 읽는다.
+  const linkCandidatesRef = useRef(linkCandidates);
+  linkCandidatesRef.current = linkCandidates;
   const notesRef = useRef(notes);
 
   const [mode, setMode] = useState<ListMode>("active");
@@ -775,6 +778,7 @@ export function MemoWorkbench({
   const { backlinks, brokenLinks, backlinksLoading, refreshBacklinks } = useBacklinks({
     token,
     folders,
+    linkCandidatesRef,
     rightPanel,
     activeNote,
     activeNoteRef,
@@ -1583,8 +1587,6 @@ export function MemoWorkbench({
   // 새로 만들면 CodeMirror 가 reconfig 를 일으켜 무겁고, autocomplete 메뉴가
   // 열려 있는 동안 상태가 깨진다. 그래서 실제 데이터(notes / 노트 생성 콜백) 는
   // ref 로 들고, 확장은 ref 를 통해 항상 최신 클로저를 읽는다.
-  const wikilinkNotesRef = useRef(linkCandidates);
-  wikilinkNotesRef.current = linkCandidates;
   const wikilinkFoldersRef = useRef(folders);
   wikilinkFoldersRef.current = folders;
   const wikilinkCreateRef = useRef(handleCreateNoteFromWikilink);
@@ -1592,7 +1594,7 @@ export function MemoWorkbench({
   const wikilinkExt = useMemo(
     () =>
       wikilinkAutocompleteExtension({
-        getNotes: () => wikilinkNotesRef.current,
+        getNotes: () => linkCandidatesRef.current,
         getNewNoteTarget: (title) => newLinkTarget(title, activeNoteRef.current?.folder_id ?? null, wikilinkFoldersRef.current),
         createNote: (title) => void wikilinkCreateRef.current(title),
       }),

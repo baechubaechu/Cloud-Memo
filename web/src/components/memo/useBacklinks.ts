@@ -14,6 +14,8 @@ import { buildLinkCandidates, resolveLink, type LinkCandidate } from "./wikilink
 type Options = {
   token: string;
   folders: Folder[];
+  /** 서버에서 받아 둔 전체 노트(일반+아카이브)의 링크 후보. 온라인일 때 깨진 링크를 여기서 찾는다. */
+  linkCandidatesRef: MutableRefObject<LinkCandidate[]>;
   /** 백링크 패널이 열려 있을 때만 찾는다. */
   rightPanel: RightPanelKind | null;
   /** 노트가 바뀌거나 제목이 바뀌면 다시 찾는다. */
@@ -27,7 +29,7 @@ type Options = {
 };
 
 export function useBacklinks(options: Options) {
-  const { token, folders, rightPanel, activeNote, activeNoteRef, draftContentRef, cacheTick, handleApiError } = options;
+  const { token, folders, linkCandidatesRef, rightPanel, activeNote, activeNoteRef, draftContentRef, cacheTick, handleApiError } = options;
   const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
   const [brokenLinks, setBrokenLinks] = useState<string[]>([]);
   const [backlinksLoading, setBacklinksLoading] = useState(false);
@@ -54,11 +56,7 @@ export function useBacklinks(options: Options) {
     setBacklinksLoading(true);
     try {
       if (!offlineStore.isActive()) {
-        const [rows, live, archived] = await Promise.all([
-          api.listBacklinks(token, note.id),
-          api.listNotes(token, { archived: false }),
-          api.listNotes(token, { archived: true }),
-        ]);
+        const rows = await api.listBacklinks(token, note.id);
         setBacklinks(
           rows.map((r) => ({
             id: `${r.note_id}:${r.line_index}`,
@@ -68,7 +66,7 @@ export function useBacklinks(options: Options) {
             text: r.text,
           })),
         );
-        setBrokenLinks(findBrokenLinks(buildLinkCandidates([...live, ...archived], folders)));
+        setBrokenLinks(findBrokenLinks(linkCandidatesRef.current));
         return;
       }
       const all = (await offlineStore.listNotes()).filter((n) => !n.deleted_at);
