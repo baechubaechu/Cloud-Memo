@@ -36,7 +36,6 @@ import type {
   NoteVersion,
   StorageUsage,
   Tag,
-  NoteTemplate,
   TemplateSettings,
 } from "@/lib/api";
 import { ApiError, api } from "@/lib/api";
@@ -67,10 +66,9 @@ import { useEditorSession } from "./useEditorSession";
 import { useNoteLoader } from "./useNoteLoader";
 import { useTodoPanel } from "./useTodoPanel";
 import { useCommandPalette } from "./useCommandPalette";
+import { useTemplates } from "./useTemplates";
 import { useStableHandlers } from "./useStableHandlers";
-import { templateShortcut, shortcutLabel } from "./templateShortcuts";
-import { renderTemplate } from "./templateVariables";
-import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, folderLinkPath, type LinkNote } from "./wikilinkPaths";
+import { buildLinkCandidates, resolveLink, newLinkTarget, linkCreationLocation, type LinkNote } from "./wikilinkPaths";
 
 export function MemoWorkbench({
   token,
@@ -116,7 +114,6 @@ export function MemoWorkbench({
   const [linkNotes, setLinkNotes] = useState<LinkNote[]>([]);
   const [templateSettings, setTemplateSettings] = useState<TemplateSettings>({ templates: [] });
   const [templateDialog, setTemplateDialog] = useState<boolean | null>(null);
-  const templateCreationBusy = useRef(false);
   const linkCandidates = useMemo(() => buildLinkCandidates(linkNotes, folders), [linkNotes, folders]);
   // 확장(위키링크 자동완성)·백링크처럼 목록이 바뀔 때마다 다시 만들면 안 되는 곳은 ref 로 읽는다.
   const linkCandidatesRef = useRef(linkCandidates);
@@ -649,35 +646,6 @@ export function MemoWorkbench({
     }
   }
 
-  async function handleTemplateNote(template: NoteTemplate) {
-    if (templateCreationBusy.current) return false;
-    templateCreationBusy.current = true;
-    try {
-      setError(null);
-      const current = activeNoteRef.current;
-      if (current && !current.deleted_at) {
-        if (!(await flushDraftForNote(current.id, current, { commit: true })) || !(await flushOverlayForNote(current.id))) return false;
-      }
-      const draft = await api.createNote(token, { template_id: template.id, folder_id: template.target_folder_id, template_timezone_offset: new Date().getTimezoneOffset() });
-      await activateFreshDraft(draft);
-      setTemplateDialog(null);
-      setSelectedFolderId(template.target_folder_id ?? undefined);
-      setExpandedFolders((previous) => {
-        const next = new Set(previous);
-        let folderId = template.target_folder_id;
-        const seen = new Set<string>();
-        while (folderId && !seen.has(folderId)) {
-          seen.add(folderId);
-          next.add(folderId);
-          folderId = folders.find((folder) => folder.id === folderId)?.parent_id ?? null;
-        }
-        return next;
-      });
-      return true;
-    } catch (e) { handleApiError(e); return false; }
-    finally { templateCreationBusy.current = false; }
-  }
-
   async function handleOpenTodayNote() {
     try {
       setError(null);
@@ -799,19 +767,6 @@ export function MemoWorkbench({
     setError,
   });
 
-  function handleTemplateInsert(template: NoteTemplate): boolean {
-    const note = activeNoteRef.current;
-    const view = editorViewRef.current;
-    if (!note || note.deleted_at || !view || composingRef.current || view.composing) return false;
-    const inserted = insertTextAtCursor(view, renderTemplate(template.content, titleInputRef.current?.value ?? draftTitleRef.current));
-    if (!inserted) return false;
-    setTemplateDialog(null);
-    window.setTimeout(() => {
-      if (activeNoteIdRef.current === note.id && editorViewRef.current === view) view.focus();
-    }, 0);
-    return true;
-  }
-
   async function handleRestoreVersion(v: NoteVersion) {
     if (!activeNoteId) return;
     if (!window.confirm(`버전 #${v.version_index} (${REASON_LABEL[v.reason]}) 으로 되돌릴까요?`)) return;
@@ -866,21 +821,24 @@ export function MemoWorkbench({
     }, 120);
   }
 
-  const templateCreateRef = useRef(handleTemplateNote);
-  templateCreateRef.current = handleTemplateNote;
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (templateDialog || confirmDialog || palette.open || event.repeat || event.getModifierState("AltGraph")) return;
-      const shortcut = templateShortcut(event);
-      if (!shortcut) return;
-      const template = templateSettings.templates.find((item) => item.shortcut === shortcut);
-      if (!template) return;
-      event.preventDefault(); event.stopPropagation();
-      void templateCreateRef.current(template);
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [templateSettings, templateDialog, confirmDialog, palette.open]);
+  // ---------- 템플릿 ----------
+  const { handleTemplateNote, handleTemplateInsert, templateCommands } = useTemplates({
+    token,
+    session,
+    templateSettings,
+    folders,
+    templateDialog,
+    setTemplateDialog,
+    confirmOpen: !!confirmDialog,
+    paletteOpen: palette.open,
+    activateFreshDraft,
+    flushDraftForNote,
+    flushOverlayForNote,
+    setExpandedFolders,
+    setSelectedFolderId,
+    setError,
+    handleApiError,
+  });
 
   const appCommands = buildAppCommands({
     activeNoteId,
@@ -894,22 +852,7 @@ export function MemoWorkbench({
     handleNewNote,
     handleOpenTodayNote,
     handleExport,
-  }).concat([
-    { id: "manage-templates", title: "노트 템플릿 관리", description: "", keywords: "template 템플릿 양식", run: () => setTemplateDialog(true) },
-    ...templateSettings.templates.map((template) => ({
-      id: `template-${template.id}`, title: `${template.name} 새 노트`,
-      description: folderLinkPath(template.target_folder_id, folders) || "루트",
-      shortcut: shortcutLabel(template.shortcut), keywords: `template 템플릿 ${template.name}`,
-      disabled: !!template.target_folder_id && !folders.some((folder) => folder.id === template.target_folder_id),
-      run: () => void handleTemplateNote(template),
-    })),
-    ...templateSettings.templates.map((template) => ({
-      id: `insert-template-${template.id}`, title: `${template.name} 현재 노트에 삽입`,
-      description: "", keywords: `template 템플릿 삽입 ${template.name}`,
-      disabled: !activeNote || !!activeNote.deleted_at || !template.content,
-      run: () => void handleTemplateInsert(template),
-    })),
-  ]);
+  }).concat(templateCommands);
 
 
   const {
